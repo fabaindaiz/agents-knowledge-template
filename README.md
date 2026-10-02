@@ -29,9 +29,9 @@ than a guess.
 2. **Enable the commit hook**, once per clone: `git config core.hooksPath .githooks`. The tool needs
    Python 3.11 or newer; the hook finds one when `python3` is older.
 3. **Check the copy**: `python3 .agents/tools/bundle.py verify --release`.
-4. **Optionally, list private terms** in `~/.config/agent-guides/private-terms.txt` (one per line,
-   never committed): names that must never reach `.agents/`, such as a client or an internal host.
-   `bundle.py privacy` fails on any of them.
+4. **List private terms** in `~/.config/agent-guides/private-terms.txt` (one per line, never
+   committed): names that must never reach `.agents/`, such as a client or an internal host, and this
+   project's own name when the repository is private. `bundle.py privacy` fails on any of them.
 5. **Run the bootstrap**: open Claude Code at the repository root and paste the block under
    *Paste this to start* in [`.agents/method/prompt-bootstrap.md`](.agents/method/prompt-bootstrap.md).
    It asks five questions first; in a project that is still empty, say in your answer what you are
@@ -40,8 +40,12 @@ than a guess.
    the gate) and writes them only after you approve. When it lists existing conventions, the
    workflow, the hook and the reviewer above come from this template and are the method's own
    wiring, not conventions to adopt around.
-6. **Commit** the result. From then on, every session follows the session loop the root file points
-   to.
+6. **Commit** the result, `.agents/carrier.toml` included. From then on, every session follows the
+   session loop the root file points to.
+7. **Let the home reach it.** On a machine that also holds the bundle's home repository, add this
+   project's path to the `carriers` list in `~/.config/agent-guides/carriers.toml` (never committed):
+   the next meta-session then carries new releases here and gathers what this project proposes. The
+   home registers it by its id alone.
 
 ## Later releases
 
