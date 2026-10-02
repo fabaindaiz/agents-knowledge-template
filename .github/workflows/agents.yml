@@ -1,0 +1,26 @@
+name: agents
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"  # the oldest the bundle's tool supports (`tomllib`)
+      # Until the bootstrap mints this repository's id (`.agents/carrier.toml`), the folder is a release
+      # as it arrived, and is verified as one; afterwards, as a carrier.
+      - name: The bundle verifies (checksums, links, privacy, proposals)
+        run: |
+          if [ -f .agents/carrier.toml ]; then
+            python3 .agents/tools/bundle.py verify
+          else
+            python3 .agents/tools/bundle.py verify --release
+          fi
+      - name: The checksums verify without the tool
+        run: cd .agents && sha256sum --check --quiet SHA256SUMS
