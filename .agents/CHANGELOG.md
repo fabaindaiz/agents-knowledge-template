@@ -9,6 +9,181 @@ version it holds with `bundle.py changelog --since <its version>`.
 
 ## [Unreleased]
 
+## [0.0.27] - 2026-10-05
+
+How the maintainer actually decides becomes part of the method: questions run in named modes, every
+option is shown by example, and two skills carry the long procedures (`decision-review`, `user-walk`).
+This release also takes in two hundred and twenty-one proposals from eight carriers, the most any release
+has gathered: seven notes admitted after their literature was checked, twenty-four notes grown, method
+changes in eight themes the maintainer reviewed one by one, and seventy-eight refusals recorded.
+
+**Marked *one carrier's evidence*:** a method change below that rests on one carrier's harvest. It is
+published by the maintainer's ruling and reviewed at the next release.
+
+**A carrier updating to 0.0.27 runs `python3 .agents/tools/bundle.py install-skills`** (two new skills),
+**sets `attribution` to `{"commit": "", "pr": "", "sessionUrl": false}` in its committed
+`.claude/settings.json`**, and wires `bundle.py trailers` into its gate or a commit hook (artifact 4,
+*Attribution is a setting, not a sentence*). `bundle.py privacy` now prints a WARN, never a silent pass,
+on a machine with no private-terms list.
+
+### Added
+
+- **Four question modes, and every option shown by example** (principle 15). The pre-flight, the decision
+  review, the fact interview and parked questions each have a shape; the inventory of decisions goes
+  together and the human's decisions go one per turn. Every option carries a concrete case at the same
+  fidelity, its price in the repository's units, what it forecloses, and a reason; a middle ground when it
+  is real. What the user sees, the stack and the owner's content stay theirs even when reversible. Measured
+  across one maintainer's sessions on one machine: most decisions go through questions, a recommendation is
+  taken about seven times in ten, free text carries most corrections, and rulings walked after a plan ran
+  were mostly changed (`meta/reviews/2026-10-05-working-practices.md` in the home).
+- **`decision-review`**, a skill: read first, list every decision tagged the human's or the agent's, walk
+  the human's one per turn by example, recompute after each answer, record before any plan.
+- **`user-walk`**, a skill: the ideal flows, then every delay, interruption, setback, failure and misuse
+  listed before any is handled, a premortem, each case kept turned into a failing test; and observations
+  from real use answered by name, reproduced, fixed test-first and swept for their class.
+- **Which installed skill fits which moment** (`method/skills/README.md`): brainstorming, then
+  `decision-review`, `user-walk`, a plan, test-first work, and at the plan's end the whole-branch review
+  offered, then `close`.
+- **Seven notes, each admitted from two to four repositories with its literature checked**:
+  `refusal-must-not-read-like-an-answer`, `readout-per-silent-outcome`, `documented-defaults-drift-from-code`,
+  `a-decoder-that-degrades-to-plausible-output-needs-an-out-of-band-check`, `a-request-accepted-is-not-an-effect`,
+  `a-version-bump-spends-the-forward-compatibility-it-was-protecting`, and
+  `a-surviving-guard-mutation-means-a-missing-input`, narrowed by the literature to four explanations.
+- **Tools.** `bundle.py turns` prints what the human said in the local session transcripts (typed turns,
+  mid-turn messages, question rounds with free text marked, skills invoked), for the harvest's reading.
+  `bundle.py trailers` fails on a commit message that credits an assistant. `bundle.py privacy --commits
+  RANGE` checks what a push sends, and the home's `.githooks/pre-push` runs it with `trailers`. `verify`
+  warns when a user-level deny rule covers a committed file.
+
+### Changed
+
+- **The whole-branch review is offered** (principle 19, the session loop's step 4): at the end of every
+  multi-task plan, one question with its cost (minutes and about 1e5 tokens). Five repositories found
+  defects a green suite missed this way. The card-driven reviewer stays on request.
+- **A rule acts only where the action reads it** (the enforcement ladder): `close` is offered in one
+  question before a push or deploy that ends a plan, when it has not run; "push everything" is no longer
+  one of its triggers (*one carrier's evidence* for the trigger change).
+- **Denies** (artifact 4): a deny stops the agent's typed spelling, not the same effect inside a script or
+  a process that already holds the file; user and project denies merge, and a deny at any level wins.
+- **Attribution is a setting, not a sentence** (artifact 4, bootstrap Phase 5, close step 5): a rule that
+  lives only in one machine's memory or user-level file reverts silently on another machine; it moves into
+  the repository and is enforced by a hook or the gate.
+- **Tests** (principle 18): a mutation is checked to have applied exactly once and to build before the test
+  is read; the call site is broken too; an expected-failure mark names its exception; defects found at
+  adoption are checks that must fail (the last two *one carrier's evidence*).
+- **Measurement** (principle 6): a cost or constraint is measured before it decides; what would invalidate
+  a measurement is written before the number is read.
+- **The bootstrap**: a guide a person runs with no disposable copy carries a tested undo and is run once
+  for real with approval; a reference that resolves is not thereby the right one, and a fetch that answers
+  through a model returns a summary even at the primary address; tool-parsed headings follow the tool's
+  language, and documents follow the repository's; a worktree inside the repository is named in the
+  brief (*one carrier's evidence*); commits group by context, and a grouping the human asked for wins; a
+  scripted edit checks every anchor before it writes.
+- **Precisions**: the fact interview asks one fact per question and never records a reason not given;
+  exemptions are keyed on content, not line numbers (principle 2); an enforcer is a check that runs and
+  can fail (principle 1, *one carrier's evidence*); a gender nobody gave becomes "they" (§20, *one
+  carrier's evidence*); a delegate's change to a check is a finding the controller reviews (*one carrier's
+  evidence*).
+- **`bundle.py count`** folds an event copied into several entries and says it counts entries, not
+  incidents. **`bundle.py privacy`** says how many terms it read and a short hash of the list.
+- **Knowledge.** Twenty-four notes gained occurrences, boundaries or remedies; eight queued candidates were
+  folded into them; `a-check-must-be-seen-to-fail`'s census was executed in two repositories;
+  `derived-over-chosen-identifiers` saw its first collision. `knowledge/OPEN.md` lists what each still lacks.
+
+### Fixed
+
+- `memory-diff` held a memory wherever a code span it names appeared; it now requires the rule itself and
+  reports *partly held* otherwise.
+- `new entry` dropped the method's fields when a log states its own format; it appends them and names them.
+- The tools die with a traceback under Python older than 3.11; they refuse in one line.
+- The roadmap template put an item's id before the middle dot, where `ids` does not read it.
+- `release.py carriers` wrote an empty-id record for a repository with no `carrier.toml`.
+- `privacy` failed a repository on its own name.
+
+## [0.0.26] - 2026-10-03
+
+The method's procedures start shipping as skills, and the close is the first. This release also takes in
+sixty-six proposals from two carriers, each with a verdict: method changes, eight notes grown, three
+candidates queued and one reopened, six standing preferences left to the maintainer's profile, ten refused
+by their own harvests, and one experiment run.
+
+**Marked *one carrier's evidence*:** a method change below that rests on one carrier's harvest. It is
+published by the maintainer's ruling and reviewed at the exit of the redesign's phase 1, when entries
+written by two carriers show whether each field is filled.
+
+**A carrier updating to 0.0.26 runs `python3 .agents/tools/bundle.py install-skills` after copying the
+release**, since its live update procedure predates step 3c. **`bundle.py verify` now fails on an installed
+skill that is stale or edited by hand**: a carrier that installed a skill from an earlier draft, or edited
+one, is red until it installs again. A skill never installed is not checked, so nothing turns the gate red
+for its absence; install it anyway. A carrier with its own skill of the same name moves its rules into
+`LOCAL.md` first, then installs with `--force` (`method/skills/README.md`).
+
+### Added
+
+- **The method's skills, installed as a base plus the carrier's `LOCAL.md`.** `method/skills/<name>/SKILL.md`
+  ships the base; `bundle.py install-skills` writes `.claude/skills/<name>/SKILL.md` merged with the
+  carrier's `LOCAL.md` (frontmatter key by key; a `##` section replaces, removes or adds), and refuses
+  to overwrite a skill the carrier wrote. `install-skills --check`, and `verify`, fail on an installed
+  skill that is stale or edited by hand. The update installs them again (step 3c).
+- **`close`, the first skill**: every part of the request, the documents true again, the changelog
+  entry, frictions counted, local memory moved into the repository, open device questions a build can
+  answer, the hand-off, then the gate, with the commit run on the gate's own exit status (never through a
+  filter, or only under `pipefail`).
+- **The bookkeeping a close runs, as commands.** `bundle.py new entry TITLE --write` writes the
+  changelog entry's skeleton with its minted id from the log's own format, or the method's; `bundle.py
+  count SYMPTOM FILE...` counts the entries that mention a friction; `bundle.py memory-diff` lists the
+  assistant's local memories the repository holds nowhere.
+
+### Changed
+
+- **The changelog entry has slots for what sessions were writing outside it** (*one carrier's evidence*).
+  Artifact 5 adds *Cards relied on, and the checks that ran*, *Review* (who, isolated or not, findings by
+  severity, what was deferred) and *Learned* (general, for the harvest; local, with where each was routed;
+  ending with the closing review's `Captured: …` line). Where a host's plan template wins, the card lookup
+  is mapped into it in one line (bootstrap Phase 4, principle 19), or the step quietly stops.
+- **The boundary of "review on request" is stated, in principle 19** (*one carrier's evidence*). It was
+  measured for the knowledge reviewer on one task's diff, not for a whole-branch review after a multi-task
+  plan, nor against what a missed defect costs; a host workflow that reviews by default stays, and its
+  findings go in the entry's *Review*.
+- **The closing review counts by searching, not from memory** (*one carrier's evidence*). Friction and
+  procedures done by hand are counted in the log and any ledger, and the count is written; a procedure an
+  earlier session also did by hand is proposed as a skill, with its cost. A new row: a fact living only in
+  local memory, an ignored ledger or a scratch file goes to the repository document that owns it (the
+  hand-off must work from another machine). Step 6 gains *a new dated record → its folder's index*, and
+  artifact 9 names that index check among the cheap ones.
+- **Deny rules, and red after the code** (*one carrier's evidence*). Artifact 4: deny per destructive
+  subcommand (a prefix also refuses the read-only forms; a rule for one form misses its neighbours; a
+  global option written before the subcommand passes a prefix rule), and a command with one denied part is
+  refused whole, so an edit is never chained to it and the tree's status is read before tests. Principle
+  18: where the tree may not be stashed, see the red by moving the implementation aside and back, or by
+  mutating; undo by editing forward, proved with `git diff --exit-code`.
+- **A delegated agent that downloads or writes gets its own scratch directory outside the repository**,
+  and a destructive step there first checks that its target resolves inside it (two repositories).
+- **A relayed claim is checked before it is repeated** (principle 6, two repositories): what an agent
+  reported, what a record says or what an incomplete search did not find is read first-hand before it goes
+  to the human or into another brief.
+- **A carrier's audit leaves the bundle's shape to `verify`** (artifact 9): it checks only how the
+  repository uses the bundle, because an audit that re-implements a release's layout turns red, or
+  vacuous, on the next one.
+- **Hearing the request** (principle 15, and one line in step 7; *one carrier's evidence*): every part of
+  the message, mid-turn ones included, is done or named as not done, and free text overrides the offered
+  options.
+- **The harvest reads what was said, not only what was recorded** (*one carrier's evidence*): the human's
+  messages in the session transcripts, mid-turn messages and question answers included, the assistant's
+  local memory and ignored ledgers, privacy-filtered; and it extracts what was asked to research,
+  corrected, stressed, requested again and got wrong again.
+- **Knowledge.** `a-check-must-be-seen-to-fail`: zero subjects after a layout moved, zero tests run, a
+  threshold's cut placed between a measured good and a measured bad output, and a planted violation in the
+  codebase's own idiom; its census was run once. `a-default-scope-is-the-widest-one` found its second tool
+  (a device task with no serial). `sweep-the-rendered-extremes`, `test-double-fidelity`,
+  `derived-copy-goes-stale-silently`, `derive-state-from-one-clock`, `same-answer-or-refuse` and
+  `absence-is-a-third-value` gained occurrences; `knowledge/OPEN.md` lists what each still lacks.
+
+### Fixed
+
+- **The update keeps only the top-level `incoming/README.md`** when it empties `incoming/`; the release
+  copy holds many files of that name (*one carrier's evidence*).
+
 ## [0.0.25] - 2026-09-29
 
 A review of every carrier's own procedures against 0.0.24, read by one agent per repository, found no
