@@ -75,6 +75,19 @@ reorganise as part of an update.
 lists, and every inbound link to it. **Report it and wait before removing
 anything.** Then `python3 .agents/tools/bundle.py verify` must pass.
 
+If the decisions log is still in four columns, give it its Status column:
+`bundle.py decisions docs/decisions.md --migrate`, then `--write` once the list
+reads right. Every row becomes `accepted recorded <date>`, the date its id was
+first committed, with no decider, which counts as a person's. Then read the rows
+whose prose says a decision was reversed, replaced or rejected, and write their
+states (`superseded by d-…` both ways, `declined`); a section of half-decided
+rows, which the migration leaves as it is and names, becomes `proposed` rows
+with `decides:`. Where you are unsure, leave `accepted`. **Then read this
+repository's own audit for anything that reads the log by column position**:
+the enforcer is now the last column and the second is Status, so a check on
+the fourth cell goes on passing while it checks the reason instead. Add
+`bundle.py decisions docs/decisions.md` to the gate, and run it.
+
 Add a decisions row (id from `bundle.py id d`) for anything now settled
 differently, and one changelog entry (id from `bundle.py id s`) covering the
 update, including what you skipped and why. Do not touch anything unrelated,
@@ -91,8 +104,8 @@ about this repository, and the prune deletes things.
 
 **╚══════════════════ END OF WHAT YOU COPY ══════════════════╝**
 
-**Run `prompt-evaluate.md` first** if you are not sure this repository needs an
-update. It is read-only, and its report says which document you want.
+**Run `prompt-evaluate.md` first**, as on every repository but an empty one. It
+is read-only, and its report says which document you want.
 
 ---
 
@@ -197,12 +210,19 @@ repository's own artifacts, which do not take the practice up.
    the home did with each. Report both. A proposal not listed stays: it waits for
    the next release.
 
-   **3b. Refresh the reviewer**: copy `.agents/agents/knowledge-reviewer.md` into the assistant's
-   agent folder again (Claude Code: `.claude/agents/knowledge-reviewer.md`), and make the root file's
+   **3b. Refresh the agents**: copy every file of `.agents/agents/` into the assistant's agent folder
+   again (Claude Code: `.claude/agents/`), the reviewer and, since 0.0.30, the researcher; and make the root file's
    knowledge line, its privacy line and its line that this repository's procedures win the ones
    `prompt-bootstrap.md` Phase 4 words, in this repository's own words. The installed copy is never edited:
    every release regenerates it; adapt it through the root file, and record the adaptation in
-   `adapted`.
+   `adapted`. **Where `carrier.toml` lists `surfaces`** (Cursor, Copilot; experimental), run `bundle.py surfaces
+   --write` after the copy. The first time, it refuses a file written by hand at a copy's path, and lists the
+   others it leaves alone: compare each with the source it parallels, move what only it says into that source,
+   then delete it or run with `--force`; report what moved.
+
+   **3b'. Keep the host's tools off the bundle**: if a linter, formatter or ratchet of this repository
+   now reads `.agents/`, exclude it (`prompt-bootstrap.md` Phase 4); a permission rule written as a list of
+   paths takes the new release's list from its `SHA256SUMS`.
 
    **3c. Install the skills again**: `python3 .agents/tools/bundle.py install-skills`, which merges
    each base in `method/skills/` with the carrier's `LOCAL.md` (`method/skills/README.md`). A skill

@@ -77,8 +77,8 @@ forwarded, and principle 20 is the rule, with the tool that checks it.
    change against what that repo already adapted and turned down
    (`carrier.toml`).
 2. Open the agent at the repository root.
-3. **Run `prompt-evaluate.md` first.** It writes one report and changes nothing,
-   so it is safe on any repository. Its report says which document you need
+3. **Run `prompt-evaluate.md` first, on every repository but an empty one.** It
+   writes one report and changes nothing, so it is safe on any repository. Its report says which document you need
    next, and sometimes the answer is none.
 4. Paste the invocation it points at — each executable prompt carries its block
    **at the top of its own file**. *Which document to run* below covers the
@@ -87,11 +87,14 @@ forwarded, and principle 20 is the rule, with the tool that checks it.
    judgement enters and it cannot be automated:** you know which of the repo's
    conventions are decisions and which are accidents; the agent cannot tell
    from the outside, and assumes they are decisions until you say otherwise.
-6. Approve the Phase 3 proposal; nothing is written before it. In a repository
+6. Approve the Phase 3 proposal; nothing but Phase 2's research document is
+   written before it. In a repository
    that already works, **read the guarantee → existing-file table carefully**:
    it is where a helpful adoption turns into an unwanted rewrite.
 
-The first pass is a long session and produces roughly: a root `CLAUDE.md` under
+The first pass is a long session (in adopt mode, it creates only what has no
+home, and the host's own files follow one per session: principle 19) and
+produces roughly: a root `CLAUDE.md` under
 200 lines, one nested file per natural area, two to four skills, a permissions
 file, a decisions log, a references register, a roadmap, a changelog, and — the
 part most people skip — **a script that checks the structural rules the prose
@@ -593,7 +596,7 @@ charged them for the privilege. The line is not subtle:
 
 | Mode | When | Shape |
 |---|---|---|
-| **Pre-flight** | before reading or writing, once | one message (§*The pre-flight*); at most five questions, aim for three, each with the default you will take; `defaults` accepts them all; one line on what you are not asking |
+| **Pre-flight** | before reading or writing, once (a bootstrap of a repository with content: after a short look) | one message (§*The pre-flight*); at most five questions, aim for three, each with the default you will take; `defaults` accepts them all; one line on what you are not asking |
 | **Decision review** | the human asks for it, or more of the human's decisions remain after reading than one message holds | the `decision-review` skill: the inventory of every decision goes together, then the human's decisions go **one per turn** (a theme of up to four if asked), until none is left; recorded before any plan |
 | **Fact interview** | facts only the human holds | your reading stated, for them to confirm or correct; no recommendation, since the fact is theirs; one fact per question, since a two-part question gets an answer that fits either part; a reason they did not give is never recorded |
 | **Parked** | while working alone, or mid-work with no channel opened | decide what is yours; write the rest to the roadmap as questions with a recommendation; raise them all at the next report |
@@ -623,6 +626,29 @@ and is asked in the human's language and plain words.
   the others; humans often compose one from two offered options, so offer it.
 - **A mockup or a throwaway prototype only for a question about how it looks or
   feels**; a scenario walked through each option for an irreversible one.
+
+**A review turn has a fixed shape**, because the human is its final reviewer: the
+one who holds the knowledge to decide, but not your context.
+
+- **Three to five short blocks of about three lines of prose**: what is decided,
+  why it matters, the options, the recommendation, the question. An option's
+  case, price and what it forecloses go in the option or a table and are never
+  cut to fit, since cutting them unevenly is the nudge this principle forbids.
+- **Every decision question carries one more answer, *review more***, which opens
+  a second level: *I do not understand it* (another example, smaller), *something
+  is wrong* (your assumptions listed, for the human to mark), *options are
+  missing* (others, or a middle ground) and *I need context* (where it comes from
+  and what depends on it). Each returns to the question; in a batch it re-asks
+  only that question and the ones that depend on it. Not on the pre-flight's
+  questions, nor on a fact question.
+- **Before an irreversible decision, show your assumptions unasked**; after a
+  costly or irreversible one, or a long explanation, a one-click check of what will
+  happen: its wrong answers are the other real options' consequences, plus *none
+  of these*, and a wrong pick or *none* reopens the decision rather than
+  re-explaining it.
+- **Before a plan is written**, the skills that fit it (`skills/README.md`) are
+  offered as a short table, each with what it does here and its cost, then one
+  multi-select question.
 
 > **Example.** Adding user-made lists to a small fixed-height screen came down to
 > three questions: whose the lists are, where the selector goes, and how one is
@@ -656,9 +682,18 @@ an obligation, not a tidy-up.** The moment a change lands, some sentence
 somewhere became false; the cheapest time to fix it is while you still know
 which sentence.
 
-Write down, once, the map of *what changed → what must move*. It is short, it is
+Write down, once, the map of *what changed → what must move*, as `docs-map.toml` at
+the repository's root: each document agents load or follow, the paths it describes,
+a reason, and whether a change without it blocks or warns. It is short, it is
 repo-specific, and without it the decay is invisible until a session acts on a
-document that has been wrong for a month. See the table in **The session loop**.
+document that has been wrong for a month. **A script checks it, not a review**:
+`bundle.py docs-drift --range BASE..HEAD` fails a blocking rule unless a commit says
+`docs-unchanged: <reason>`, `--staged` warns at pre-commit, `verify` checks the map
+and the references in mapped documents, and `--report --since 7d` gives each rule's
+escape rate, the documents left behind and pairs history suggests (never added by
+it). A rule escaped most of the time is narrowed or dropped. Touching a document
+proves only that it changed, not that it is true: turn a checkable fact into an
+assertion where you can.
 
 **Prevents:** the slowest and most expensive rot in an agent-assisted repo — a
 document that is still read, still believed, and no longer true.
@@ -800,6 +835,15 @@ specification.** Prose written from code in progress records the bug as intent;
 a test written to the comment asserts what was never implemented. Go back to the
 requirement.
 
+**A test in the gate asserts behaviour, never speed.** A wait waits for its
+condition, never for a fixed sleep. A timeout is a hang detector: set about ten
+times above the normal time, enforced from outside the test, and printing the
+stacks when it fires. A speed that matters is counted in a unit no machine changes
+(operations, allocations), made relative within one run, or measured in a job of
+its own that repeats and reports an interval — on a machine other sessions share,
+an absolute time measures the load. A test found red on the untouched base gets
+the strict expected-failure mark, not a sentence in the commit message.
+
 **Prevents:** a suite that certifies the implementation's bugs, and the specific
 agent failure of writing a green test around code it just wrote.
 
@@ -832,9 +876,11 @@ Three rules that keep this from becoming drift:
 1. **Map before you write.** Produce the guarantee → existing-file table
    (*Adopting into a repository that already works*) and show it before creating
    any file. A new file is only created for a guarantee that has **no** home.
-2. **One artifact per session, never a big-bang.** Adoption is incremental by
-   construction. A session that reorganises four things has made itself
-   unreviewable.
+2. **One existing file per session, never a big-bang.** Adoption is incremental by
+   construction: the first pass proposes everything, but creates in one session
+   only the artifacts that have no home, and each file the host already has is
+   extended in a session of its own. A session that reorganises four things has
+   made itself unreviewable.
 3. **Record every substitution in `carrier.toml`.** An adaptation that is not
    written down will be re-proposed by the next update, and re-declined, forever.
 
@@ -845,10 +891,14 @@ saying it did. **A host workflow that already reviews by default** (a
 whole-branch review at the end of a plan) **is left in place.** The method's
 card-driven reviewer runs on request, as measured on one task's diff; a
 whole-branch review in a fresh context is **offered** in one question, with its
-cost, at the end of every multi-task plan — in several repositories nearly every
-one found a defect the green suite missed, at minutes and about 1e5 tokens each,
-though none was compared with a card-driven run or with what a missed defect
-costs. Its findings go in the changelog's *Review*, where the harvest reads them.
+cost, at the end of every multi-task plan. Its evidence is thin: in several
+repositories nearly every one reported a defect the green suite missed, at
+minutes and about 1e5 tokens each, with no control, no precision recorded and no
+second run compared, and on a large change almost any capable review finds
+something. **Each finding comes with its proof** — the command, the test or the
+line; one without is reported unconfirmed. The changelog's *Review* records the
+findings confirmed and rejected, the tokens and the minutes, where the harvest
+reads them. No split by area: k specialists against k generalists is unsettled.
 
 And the direction that is easy to forget: **the host repo usually knows
 something the method does not.** A convention you would not have chosen, which
@@ -890,6 +940,10 @@ its identity, and what its public code already shows, may stay. Every other
 carrier is private, is described only by a neutral kind, and **never has its
 carrier id written beside a description** — the id is what would join every
 other detail to it.
+
+**A carrier's confidential records stay in its private folder** (`.private/`, at the
+root; gitignored where the repository is public): no tool and no harvest reads it, and
+each file opens with the sentinel line the privacy check fails on anywhere else.
 
 **Privacy wins over record-keeping.** Where this rule meets "never lose
 information", this rule wins. Sensitive detail is generalised while the lesson
@@ -1060,11 +1114,12 @@ written in.
 Build them in this order; each one assumes the ones above it.
 
 ```
-CLAUDE.md                        invariants + the map          < 200 lines, every session
+AGENTS.md                        invariants + the map          < 200 lines, every session
+CLAUDE.md                        the bridge: `@AGENTS.md`      one line, for Claude Code
 <area>/CLAUDE.md                 local depth                   on demand, when reading there
 .claude/skills/<name>/SKILL.md   procedures                    on demand, by description
 .claude/settings.json            permissions, env, hooks       always active
-.claude/logs/agent-changelog.md  what changed and why          written every session
+.claude/logs/agent-changelog.md  what changed and why          written every session (`log` may name another)
 docs/decisions.md                every decision + enforcer     read when a rule is questioned
 docs/references.md               external research, annotated  read before touching that area
 docs/roadmap.md                  collisions and progress       read before starting something new
@@ -1074,12 +1129,17 @@ README.md                        what this is, for a newcomer
 .editorconfig                    one block per language, matching the linter
 ```
 
-### 1. Root `CLAUDE.md` — under 200 lines
+### 1. Root `AGENTS.md` — under 200 lines
 
-The only file loaded on every request. Sections, in this order:
+The one source every assistant reads, loaded on every request. Claude Code loads
+`CLAUDE.md` and reads `AGENTS.md` only when there is none, so a root `CLAUDE.md`
+holds `@AGENTS.md` as its first line and only what Claude Code alone needs
+(*Three agents, one source*). A repository whose rules already live in
+`CLAUDE.md` keeps them there: nothing moves, and it is not a substitution to
+record. Sections, in this order:
 
 ```markdown
-# CLAUDE.md
+# AGENTS.md
 One paragraph: what this project is, who it is for, the one thing that is unusual about it.
 
 ## Non-negotiable constraints
@@ -1249,7 +1309,10 @@ fails on an attribution trailer: a `commit-msg` hook, or the gate over
 Commit this file; keep `settings.local.json` out of git. The `.claude/`
 directory is how the repo explains itself — it belongs to the team.
 
-### 5. `.claude/logs/agent-changelog.md`
+### 5. The session log — `.claude/logs/agent-changelog.md` by default
+
+A repository that keeps it elsewhere names the path in `carrier.toml` (`log`), and
+`bundle.py new entry` and `count` read it there. The log belongs to no assistant.
 
 ```markdown
 ## YYYY-MM-DD · s-<repo6>-<content6> — <one-line title>
@@ -1304,13 +1367,15 @@ session down it.
 
 ### 6. `docs/decisions.md` — the index of everything settled
 
-ADR-lite, as tables grouped by subject. **Four columns, and the fourth is the
-one that matters.**
+A decision log in the ADR tradition, as tables grouped by subject: one row per
+decision rather than one file. **Five columns; the last is the one that
+matters, and the second is the one a tool reads.**
 
 ```markdown
-| Id | Decision | Why | Enforced in |
-|---|---|---|---|
-| d-abcdef-123456 | <the decision, imperative> | <the cost of the alternative, with the number> | <script, class, constant, config — or "—" for a decision with no enforcer> |
+| Id | Status | Decision | Why | Enforced in |
+|---|---|---|---|---|
+| d-abcdef-123456 | accepted 2026-01-05 · h1 | <the decision, imperative> | <the cost of the alternative, with the number>; accepting: <what this decision costs> | <script, class, constant, config — or "—" for a decision with no enforcer> |
+| d-abcdef-654321 | proposed 2026-01-09 · agent s-abcdef-111111 · decides: h1 | <the change> | supersedes d-abcdef-123456; <why> | — |
 ```
 
 Rules for it:
@@ -1319,13 +1384,44 @@ Rules for it:
   creation** — a later edit to the row never recomputes it — and never reused;
   `CLAUDE.md`, the changelog and the roadmap cite it. Ids written before this
   scheme (`D-001`, `d-abcdef-017`) stay valid as written and are never rewritten.
+- **Status** is `<state> <date> · <decider>`, in these English words whatever
+  language the log is written in, because a tool reads them: `proposed`,
+  `accepted`, `declined` (a non-decision, principle 10), `deprecated` (no longer
+  applies, nothing replaced it), `superseded by d-…` (written in the old row, in
+  place, and the new row's Why says `supersedes d-…`: principle 6). The date is
+  the decision's; a migrated row reads `accepted recorded <date>`, the date it
+  was first written down.
+- **The decider** is a person's stable alias (`h1`), an agent's session
+  (`agent s-…`) or `found` (read from the code: nobody who can be asked decided
+  it). A proposed row adds who must decide, `decides: h2`. **Only a person
+  accepts or declines.** An agent writes `accepted · agent s-…` only for what
+  principle 15 leaves to it, and reports it; to change a decision a person took,
+  or one with no decider, it writes a `proposed` row that supersedes it. An
+  alias is never reassigned, and which name it stands for is kept only in the
+  private folder (principle 20).
+- **Why** begins with `unconfirmed:` when no person gave the reason — a
+  bootstrap reading the code, an agent's inference; only a person removes the
+  mark. It ends with `accepting: <cost, with its number>` when the decision has a
+  cost of its own, which is the consequence a log otherwise forgets.
 - A decision with `—` in the last column is a decision that **can be broken
   silently**. That is allowed, but it should be visible.
-- Some rows are *decisions, not rules* (deliberate duplication, a rejected
-  refactor) and some are *discarded, with the number* (principle 6, 10). Mark
-  them as such — they are among the most useful rows in the file.
-- The prose and the measurements live in the document that owns them; this file
-  is the index that finds them.
+- `bundle.py decisions docs/decisions.md` belongs in the gate: it fails on a
+  Status that does not parse, a supersession not written both ways and an agent's
+  acceptance over a person's decision, and warns on every proposed row, every
+  unconfirmed reason and an enforcer path that names no file. A four-column log
+  gains the column with `--migrate`.
+- **Write a row** when a change adds or removes a runtime dependency, moves a
+  module boundary, changes persisted data or a public interface, is hard to
+  revert, is a choice a reviewer would question (not doing the common thing
+  included), or fixes a cross-cutting convention. Not for a fix, a rename, a
+  lint, or what an accepted row already covers.
+- The prose and the measurements live in the document that owns them; where no
+  document does, the changelog entry that took the decision (`s-…`) owns it and
+  the row cites it. This file is the index that finds them.
+- **What looks deliberate and is not** gets a section of its own at the end,
+  *Looks deliberate, is not* (`| Id | What | Why it is not deliberate | Fix when |`):
+  it tells the next agent what it may fix without asking, and a row is deleted
+  when it is fixed.
 - A decision is made **once**. If it is reopened with no new fact, the answer is
   this document.
 
@@ -1374,6 +1470,7 @@ What it is, in two lines.
 **What it collides with.** The rule, by its id, and why the collision is real.
 **What is already in its favour.** The mechanisms that exist.
 **What must be decided first.** Questions, not tasks.
+**Estimate**, for a large item: the release it is cut into, and its cost in time and tokens, with what it rests on.
 
 ## Closed by measurement
 Ideas retired by a number, with the number, so they stay retired.
@@ -1381,6 +1478,11 @@ Ideas retired by a number, with the number, so they stay retired.
 ## What each one costs the invariant
 | Idea | Does it break <the core invariant>? |
 ```
+
+**When the repository keeps its pending work in an external tracker**, the roadmap
+does not copy it: it holds only what the tracker cannot (where the work stands,
+collisions between items, process and tooling items, what is blocked outside), and
+every item names the tracker key it belongs to.
 
 Each item's `i-` id goes after the middle dot, where `bundle.py ids` reads a
 heading's id. It is minted once with `bundle.py id i "<idea>"` when the item is
@@ -1508,16 +1610,37 @@ failure with an extra step.
 
 ### What each surface can actually do
 
-Checked against each vendor's documentation on 2026-09-24; the sources are in the
+Checked against each vendor's documentation on 2026-10-08; the sources are in the
 home repository's `sources/references.md`, *Writing for an agent*.
 
 | | Claude Code | Cursor | Copilot |
 |---|---|---|---|
-| Always-on file | `CLAUDE.md` at the root; `AGENTS.md` only when there is no `CLAUDE.md` | `.cursor/rules/*.mdc` with `alwaysApply: true`; `AGENTS.md`, nested ones included | `.github/copilot-instructions.md`; `AGENTS.md` (nearest wins), root `CLAUDE.md` or `GEMINI.md` on the surfaces that read agent instructions |
+| Always-on file | `CLAUDE.md` at the root; `AGENTS.md` only when there is no `CLAUDE.md` | `AGENTS.md`, nested ones included; `.cursor/rules/*.mdc` with `alwaysApply: true`; the CLI also reads a root `CLAUDE.md` | `AGENTS.md` (nearest wins); `.github/copilot-instructions.md`; the CLI, cloud agent and code review also read `CLAUDE.md` with its `@` imports; VS Code reads nested `AGENTS.md` and `CLAUDE.md` only behind settings |
 | Per-area rules | nested `CLAUDE.md` loaded **on demand** when files there are read, **and** `.claude/rules/*.md` **auto-attached by glob** via `paths:` | `.mdc` rules with `globs:` ("Apply to specific files"); nested `AGENTS.md` | `.github/instructions/*.instructions.md` with an `applyTo:` glob — **support differs by surface** (Visual Studio: chat only) |
-| On-demand procedures | skills, chosen from their `description` | rules chosen by `description` ("Apply intelligently") or by @-mention | **agent skills** (`SKILL.md` in `.github/skills/`, `.claude/skills/` or `.agents/skills/`), chosen from their `description` — cloud agent, code review, CLI and VS Code agent mode; **prompt files** (`.github/prompts/*.prompt.md`), run by hand as a slash command in VS Code, Visual Studio and JetBrains (public preview); **custom agents** (`.github/agents/`), profiles selected by hand, or used by the cloud agent from the task's context unless `disable-model-invocation: true` |
-| Deterministic enforcement | **hooks** on lifecycle events | **hooks** in `.cursor/hooks.json`; a hook can deny an action | **hooks** in `.github/hooks/*.json`, `preToolUse` can deny — **only on the cloud agent and the CLI** |
-| Path exclusion | `permissions.deny` | `.cursorignore` — **not a boundary** for the agent's terminal and MCP tools | content exclusion, set in repository or organisation **settings**, not a file; IDE agent mode does not honour it |
+| On-demand procedures | skills, chosen from their `description` | **skills** from `.cursor/skills/`, `.agents/skills/` **and `.claude/skills/`**, chosen from their `description` (the name must match its folder); rules by `description` or @-mention | **agent skills** (`SKILL.md` in `.github/skills/`, `.claude/skills/` or `.agents/skills/`), chosen from their `description` — cloud agent, code review, CLI, VS Code and JetBrains agent mode; **prompt files** (`.github/prompts/*.prompt.md`), run by hand; **custom agents** (`.github/agents/` **and `.claude/agents/`**), with a `tools` list in Copilot's own aliases |
+| A context of its own | subagents in `.claude/agents/`, limited to their `tools:` | **subagents** from `.cursor/agents/` **and `.claude/agents/`** (Cursor's wins on a shared name); limited only by `readonly: true` | custom agents run as subagents with their own context in the CLI |
+| Deterministic enforcement | **hooks** on lifecycle events | **hooks** in `.cursor/hooks.json`, **and Claude Code's hooks in `.claude/settings.json`**, mapped; a hook can deny an action; IDE yes, cloud agent command hooks only, Linux CLI **unverified** | **hooks** in `.github/hooks/*.json`, `preToolUse` can deny — cloud agent, CLI (which also reads Claude Code's hooks) and VS Code in preview (Claude Code's only behind a setting) |
+| Path exclusion | `permissions.deny` | `.cursorignore` — **not a boundary** for the agent's terminal and MCP tools; the CLI has its own `permissions.deny` | content exclusion, set in repository or organisation **settings**, not a file; VS Code agent mode does not honour it; the CLI has `--deny-tool` |
+
+**Read by column, the one-source design already reaches all three.** Both other
+assistants now read `AGENTS.md` and, for compatibility, the folders Claude Code
+uses for skills and subagents, and most of its hooks. So write once, in
+`AGENTS.md` and those folders, and generate only what has no common location:
+per-area rules (one glob in three spellings) and a subagent's tool limit. Where
+a surface's import of another assistant's files is a setting, say so in the
+repository, since it can be switched off.
+
+**Generated, and checked (experimental since 0.0.30).** A carrier that lists
+Cursor or Copilot in `carrier.toml` (`surfaces`) runs `bundle.py surfaces
+--write`: each `.claude/rules/*.md` becomes a Cursor `.mdc` rule (`paths:` to
+`globs:`) and a Copilot instructions file (`applyTo:`), each `.claude/agents/`
+file a Cursor subagent (`readonly` when it cannot edit) and a Copilot custom
+agent (its tools in Copilot's aliases), and Copilot gets a pointer to
+`AGENTS.md` where none was written by hand. Each copy names its source, and
+`verify` fails a copy that is stale, edited, or left behind by its source. A file
+written by hand is never overwritten without `--force`. What it does not do yet:
+hooks for the surfaces that do not import Claude Code's (the guarantee stays in
+git hooks and CI), and any measurement of the other assistants.
 
 **ASSUMPTION beyond that date:** all three products move quickly, and this table
 is the shape rather than the specification. Verify file names, frontmatter
@@ -1669,6 +1792,11 @@ work you have not done yet.
   decided for them and can object.
 - **Ask conditionally.** A question that only matters in a monorepo is not asked
   in a repository with one package. Detect first, then ask what remains.
+- **A bootstrap asks its objectives, ordered by the repository's kind.** An empty
+  repository is asked at once; one with content gets a short look first, about
+  five minutes, so the question proposes what it is for, what the initialisation
+  delivers and how deep, and which questions its research answers, instead of
+  asking them blank (`prompt-bootstrap.md` §*Before you start*).
 - **It is one of four question modes** (§15). When the decisions that remain
   after reading are more than this block holds, they are not squeezed into it:
   say so, and propose a decision review.
@@ -1733,9 +1861,10 @@ produce this table and **show it**. It is the entire negotiation:
 | Guarantee the method needs | Typical file | What this repo already has | Verdict |
 |---|---|---|---|
 | Always-loaded invariants + a map | `CLAUDE.md` | `CONTRIBUTING.md` §Architecture | **extend it**, add the map, leave the rest |
-| Settled decisions, with enforcers | `docs/decisions.md` | `docs/adr/*.md` | **keep ADRs**, add the enforcer line to the template |
+| Settled decisions, with enforcers | `docs/decisions.md` | `docs/adr/*.md` | **keep ADRs**: an index row per record in the five columns, its status mapped (`rejected` → `declined`, `pending` → `proposed`), supersession both ways; the mapping in `adapted` |
 | External research, annotated | `docs/references.md` | a Notion page | **out of reach** — add a pointer, record in `adapted` |
 | Planned work with collisions | `docs/roadmap.md` | `PLANNING.md` | **add the missing sections** to it; do not rename |
+| Planned work kept in a tracker | `docs/roadmap.md` | tickets in an external tracker | **keep the tracker**; the roadmap holds only what it cannot, each item citing its key; record in `adapted` |
 | Per-change log | `.claude/logs/agent-changelog.md` | Conventional Commits, squashed | **new file** — commit subjects cannot carry the *why* at this length |
 | One command that runs everything | task runner entry | `make check` exists but skips types | **extend the existing target**, do not add a second |
 | Structural rules, executable | `tools/audit_*.py` | nothing | **new file** — no home exists |
@@ -1932,6 +2061,29 @@ workspace, and it disappears the moment you close the other windows.
 
 ---
 
+### Long runs and delegates
+
+A delegated agent's work ends in its report, and three things stop one that did
+nothing wrong: **a machine that sleeps**, **the harness's stall watchdog**, and **a
+lost hand-off**. Wall-clock timers — a command's timeout, a background time limit,
+the watchdog — keep counting while a sleeping machine's processes are frozen and
+fire at the next wake, so a gate that seems to hang under load may have spent its
+whole limit asleep. Keep the machine awake for a long run (on mains power, lid
+open, a keep-awake held), or attend it.
+
+- **A gate under the foreground ceiling** runs in the foreground, with a timeout
+  above its usual time. **A longer one** runs in the background with a timeout of
+  about three times its usual time, and the delegate ends its turn until notified;
+  never a sleep loop, and printing progress resets nothing.
+- **Gates are serialised**, one per machine behind a lock (`flock`, `lockf`), or
+  each delegate stops at *staged, message saved* and the coordinator runs them one
+  at a time: the gates, not the agents, compete for the machine.
+- **Every delegate brief carries three lines**: its scratch directory and its
+  done-state; how to run the gate, and the lock; and that its report is its final
+  message, which is the channel a harness keeps.
+- **A stalled delegate is not a failed task**: read its scratch directory and
+  `git status`, then resume it by message. Check every report first-hand.
+
 ## Models, reasoning levels and cost
 
 **Clarity and correctness first; cost is a real parameter and not the deciding
@@ -2009,6 +2161,18 @@ stopped at <where>."*
   gate before the review; the type checker before the argument about design.
 - **Do not pay twice for the same read.** If Phase 0 listed the tree, later
   phases cite that list rather than walking it again.
+- **Keep the prompt cache whole.** A host re-reads the start of the context from
+  a cache, cheaply, until something there changes: keep what is always loaded
+  free of anything dynamic (a date, a count, a status), and never name a model
+  in a skill, since switching the model for a turn misses the whole cache. A
+  release's build refuses a method skill that names one.
+- **A headless run or a delegated agent takes the five-minute cache**: a
+  one-hour cache write costs about twice a five-minute one, and an unattended
+  run rarely idles past five minutes (`CLAUDE_CODE_PROMPT_CACHE_TTL=5m` for a
+  scripted run; a subagent's own `experimental.cacheTtl`, as the bundle's agents
+  set it). An interactive session that idles longer keeps the default.
+- **Make independent tool calls in one message**, in parallel: each extra turn
+  re-sends the whole context.
 
 ---
 

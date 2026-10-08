@@ -10,6 +10,7 @@ Replace this file with your project's own read-me once the bootstrap has run.
 |---|---|---|
 | `.agents/` | the bundle's release, exactly as `bundle.py export` writes it; its version is in `.agents/README.md` | the release: never edited here |
 | `.claude/agents/knowledge-reviewer.md` | the reviewer subagent, copied from `.agents/agents/`, run only on request | the release |
+| `.claude/agents/researcher.md` | the researcher subagent, copied from `.agents/agents/`, for delegated research; its hook keeps its shell to reads and fetches into a temporary folder, and runs only in a folder the assistant trusts | the release |
 | `.github/workflows/agents.yml` | CI: `bundle.py verify` and the checksums | this project |
 | `.githooks/pre-commit` | the same check before every commit | this project |
 | `.gitignore` | OS, editor, Python and assistant local state | this project |
@@ -38,7 +39,7 @@ than a guess.
    building, its language and framework, since there is little to read. It then mints the id
    (`bundle.py carrier-id --mint`), proposes the files (`AGENTS.md`, the decisions log, the roadmap,
    the gate) and writes them only after you approve. When it lists existing conventions, the
-   workflow, the hook and the reviewer above come from this template and are the method's own
+   workflow, the hook, the reviewer and the researcher above come from this template and are the method's own
    wiring, not conventions to adopt around.
 6. **Commit** the result, `.agents/carrier.toml` included. From then on, every session follows the
    session loop the root file points to.

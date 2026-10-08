@@ -29,10 +29,11 @@ Reads:
 - knowledge/OPEN.md
 - proposals/README.md
 
-**Close what is open before reading anything.** In each repository, finish the
-session that is in flight — its closing review, its documents put back to true,
-its changelog entry, its gate — or, if I tell you to leave it, say so and
-harvest only what is already recorded.
+**Close what is open before reading anything**, if it is this session's own work:
+its closing review, its documents put back to true, its changelog entry, its
+gate. Uncommitted work this session did not do is named in your opening
+question and, unless I say otherwise, left alone: harvest only what is already
+recorded.
 
 Then read what this repository recorded since `harvested_through` in
 `.agents/carrier.toml`, and what the human said in that period's session
@@ -51,7 +52,13 @@ never carry one's conventions into another.
 Privacy (principle 20): every candidate and every line of evidence is
 generalised before it is written — no figure, quote, identifier, domain noun or
 personal detail that could identify a private repository, its people or its
-users — and `bundle.py privacy` passes before the commit.
+users — and `bundle.py privacy` passes before the commit. The private folder
+(`.private/`) is never read. Every warning the check prints on a proposal
+is a question for me, "is this private?", defaulting to generalise it; only my
+yes writes `privacy-allow: <reason>`, and the home refuses a warning left
+unanswered. A proposal already written cannot be edited, since its id seals
+its content: an answer deletes it while it is unreceived and writes a new one,
+generalised or carrying the allowance, before the next gather.
 
 Finish with `python3 .agents/tools/bundle.py verify` and
 `python3 .agents/tools/bundle.py check-local .`, which must report nothing, and a
@@ -83,10 +90,10 @@ as proposed.
    they showed as proposals of kind `experiment`; the rest stay queued. Say if
    you want none run, or a specific one run whatever it costs.
 
-3. Work in flight. Where a repository has an unclosed session — uncommitted
-   work, a changelog entry not written, documents a change made false — I will
-   close it first and then harvest it. Say if you want it left alone instead,
-   and I will harvest only what is already recorded and name what I skipped.
+3. Work in flight. Where a repository holds uncommitted work, a changelog entry
+   not written or documents a change made false, and this session did not do
+   it, I will leave it alone, harvest only what is already recorded and name
+   what I skipped. Say if you want me to close it first.
    Closing and harvesting end in commits only as this repository's own commit
    rules allow: where they say commits are offered, or made only when asked,
    I offer them and stop.
@@ -137,15 +144,15 @@ this repository's own: list them with `bundle.py proposals`, commit them as they
 proposal is never rewritten; a wrong one is deleted before it is committed, and the report says so), and
 propose nothing they already say.
 
-**If the maintainer says to leave work in flight alone**, harvest only what is already recorded, and
-name in the report what was skipped. Never close somebody else's session without being told: the
-uncommitted diff is their work.
+**Work in flight this session did not do is left alone** unless the maintainer says to close it: harvest
+only what is already recorded, and name in the report what was skipped. Never close somebody else's
+session without being told: the uncommitted diff is their work.
 
 ## Phase 1 — the harvest, per repository
 
 1. **Read what this repository recorded since `harvested_through`**, that day included, not what it
    summarises: the root
-   instruction file, the area rules, the decisions log and its evidence, the changelog in full (it
+   instruction file, the area rules, the decisions log and its evidence (never the private folder), the changelog in full (it
    holds the discarded alternatives and the numbers), the roadmap, the audit script's comments, and
    the commit messages of the period. With several repositories open, one read-only agent per
    repository is cheap and keeps the reading from crowding out the judgement. What
@@ -200,7 +207,7 @@ uncommitted diff is their work.
 | When | Why |
 |---|---|
 | Before a release, in every carrier | the release gathers the proposals; a carrier that has not harvested contributes nothing |
-| When a friction is hit a second time here | the second occurrence is the evidence admission asks for, and it is available now |
+| When a friction is hit a second time here | it is worth proposing while the evidence is fresh; admission still counts occurrences across carriers |
 | When a repository has run for a while without one | the changelog still holds the numbers; a year later it holds the summaries |
 
 ## What the local step must never do
@@ -213,6 +220,8 @@ uncommitted diff is their work.
 - **Never write what identifies a private repository** into a proposal — not its figures, quotes,
   identifiers, domain nouns or anyone's personal context — and never trust memory over
   `bundle.py privacy`.
+- **Never read the private folder** (`.private/`, or the one `carrier.toml` names), and never
+  answer a privacy warning for the human: when in doubt, it stays out.
 - **Never invent a second occurrence.** One repository seeing something twice is one repository; the
   count that matters is across carriers, and the release is where it is taken.
 - **Never harvest a repository this session does not have open**, however reachable its path is.

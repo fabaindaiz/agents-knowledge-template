@@ -19,7 +19,7 @@ work a review has not read: if one is pending, say so and stop there.
 **A push or a deploy is not a close either.** When one is about to end a plan and no close has run in
 this session, offer the close in one question first: the counts, the deferred findings, the device
 questions and the hand-off happen nowhere else. Push after the answer, whatever it is. (A rule acts
-only where the action reads it: `prompt-context.md` §*The enforcement ladder*.)
+only where the action reads it: `.agents/method/prompt-context.md` §*The enforcement ladder*.)
 
 ## 1. Every part of what was asked
 
@@ -29,10 +29,19 @@ free text of question answers (it overrides the options). List each part as **do
 
 ## 2. The documents, true again
 
+- Where the repository keeps a `docs-map.toml`, run `python3 .agents/tools/bundle.py docs-drift --range
+  <the session's base>..HEAD` and fix what it flags, or say why in a `docs-unchanged: <reason>` line.
 - `grep` the documents for every claim the diff made false: a number, a path, a rule, a count, a
   "nothing yet". The root instruction file's map names where each kind lives.
 - A new dated record (research, plan, spec) gets its folder's index row.
-- A rule or a settled question: a decision row with its enforcer.
+- A rule or a settled question: a decision row with its Status and its enforcer. Run
+  `python3 .agents/tools/bundle.py decisions <the decisions log>` (`docs/decisions.md` unless the root file's map
+  names another): each `proposed` row is a decision for
+  the human, and each `unconfirmed:` reason a fact question; ask them in the hand-off, never decide them.
+- A proposal written this session that `bundle.py privacy` warns on is a question too: "is this
+  private?", defaulting to generalise it. Only the human's yes writes `privacy-allow: <reason>`. A proposal
+  cannot be edited, since its id seals its content: answering means deleting it while it is unreceived and
+  writing a new one, generalised or carrying the allowance, before the next gather.
 
 ## 3. The changelog entry
 
@@ -44,6 +53,8 @@ states none). Replace each comment, and beyond the format:
 - **Rulings:** every decision taken on the human's behalf, copied from the plan's ledger.
 - **Learned:** general (the harvest's) and local (where each was routed).
 - **What went wrong** includes the lessons this session found false: a recorded lesson is a claim.
+- **Measured:** for a large plan, its estimate beside what it took (sessions, release, time, tokens); a miss
+  of more than about twice is a learning, and its reason goes in it.
 
 ## 4. Count, never remember
 
@@ -67,7 +78,7 @@ instructions) is silently reverted on every other machine, and loses to the host
 this one: a commit trailer the human forbade is the usual case. Move it into the repository's root
 instruction file, and where it can be checked, into a hook or the gate (for that case, attribution off
 in the committed project settings and a check that fails on an attribution trailer:
-`prompt-context.md`, artifact 4, *Attribution is a setting, not a sentence*).
+`.agents/method/prompt-context.md`, artifact 4, *Attribution is a setting, not a sentence*).
 
 ## 6. Devices and production
 
@@ -82,11 +93,27 @@ sibling repositories) and the first concrete step.
 
 ## 8. Ledgers travel
 
-A plan's execution ledger is committed with the plan's work and never deleted at the end, whatever a
-plan tool says: it holds the rulings and the task results the changelog summarises.
+A plan's execution ledger holds the rulings and the task results the changelog summarises: a status table
+(task, state, the commit that landed it), updated as each task lands, with a task found wrong marked and
+its reason, never dropped. It is committed with the plan's work and never deleted at the end, whatever a
+plan tool says, **unless the plan is kept as a working artifact**: local, outside git, removed with its
+worktree. Then, before its folder goes, each kind of content moves to the record that survives it:
+
+| In the plan | Goes to |
+|---|---|
+| why the change was made | the changelog entry |
+| what was delivered | the work item |
+| how it was verified | the pull request |
+| anything deferred | a new tracker item |
+| a lasting decision | the decisions log |
+
+The rulings are read from wherever the plan kept them; never assume the plan persists.
 
 ## 9. Gate, commits, and only then the remote
 
+- `python3 .agents/tools/bundle.py close --base <the session's base>` runs every check of this close that needs
+  no judgement (verify, trailers, record ids, decisions, docs-drift, local memory) in one command, and fails on
+  any; it passes before the commit.
 - The repository's gate, chained to the commit (`<gate> && git commit …`), split by dependency. The
   commit runs on the gate's own exit status: never through a filter (`<gate> | tail`), or only under
   `set -o pipefail`.
@@ -96,3 +123,7 @@ plan tool says: it holds the rulings and the task results the changelog summaris
 - The human's own uncommitted changes go in only when the human says so, in a commit of their own,
   as left.
 - Push, or merge into the main branch, only when the human asks.
+- **Ready for review is a state of its own.** Where the host reserves merging and closing to a person, prepare
+  the evidence (gates green, the pull request's body, the summary for the work item's author), move the item
+  to review, and stop. After a person approves: merge, remove the worktree before deleting its branch, close
+  the item. The repository's own closing procedure, where it has one, wins.

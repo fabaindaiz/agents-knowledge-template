@@ -24,6 +24,10 @@ own tool, never by this one.
     python3 .agents/tools/bundle.py id d|i|s TEXT... [--repo R] a record id: decision, roadmap item, session
     python3 .agents/tools/bundle.py ids [--carrier REPO] FILE... record ids in files: malformed, defined twice,
                                                                 or defined under another carrier's id
+    python3 .agents/tools/bundle.py decisions FILE... [--migrate [--write]]
+                                                                a decisions log: its Status cells, supersession
+                                                                both ways, no agent over a person; --migrate adds
+                                                                the Status column to a four-column log
     python3 .agents/tools/bundle.py report [TREE] [--json] [--check]   size per folder and session; budgets
     python3 .agents/tools/bundle.py changelog --since X.Y.Z     what changed after the version this carrier holds
     python3 .agents/tools/bundle.py export DEST                 the shipped files and SHA256SUMS: a release as it travels
@@ -36,13 +40,14 @@ own tool, never by this one.
                                                                 the bundle's skills, each merged with the
                                                                 carrier's LOCAL.md, into .claude/skills/
     python3 .agents/tools/bundle.py new entry TITLE... [--write] a changelog entry skeleton with its minted id
+    python3 .agents/tools/bundle.py docs-drift --range BASE..HEAD   documents a change left stale (also --staged,
+                                                                --map, --refs, --report --since 7d); docs-map.toml
     python3 .agents/tools/bundle.py count SYMPTOM [FILE...]     how many entries mention a friction, by search:
                                                                 entries, not incidents; a repeated line is flagged
     python3 .agents/tools/bundle.py memory-diff                 the local memories the repository does not hold
     python3 .agents/tools/bundle.py turns [--since DATE] [PROJECT_DIR...]
                                                                 what the human said in this repository's local
                                                                 session transcripts, oldest first; read-only
-    python3 .agents/tools/bundle.py digest [TREE] --check       deprecated alias of `verify` (0.0.x only)
 
 With no REPO, the repositories are this session's workspace: `AGENT_WORKSPACE` if it is set, else the
 local manifest (see `MANIFEST`), which lists this machine's paths and never travels with the bundle.
@@ -60,6 +65,7 @@ if sys.version_info < (3, 11):
 
 import argparse
 import builtins
+import collections
 import datetime
 import functools
 import hashlib
@@ -76,6 +82,7 @@ import tarfile
 import tempfile
 import tomllib
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -285,8 +292,11 @@ def reachability_problems(tree: Path) -> list[str]:
     """
     indexes = [rel for rel in ("knowledge/INDEX.md",) if (tree / rel).exists()] + sorted(_rels(tree, "knowledge/areas/*.md"))
     linked = {resolved for index in indexes for _, resolved in _links(tree, index)}
+    # Since 0.0.30 a note is reached through its card: the index links the card, the card links the note.
+    linked |= {resolved for card in sorted(linked) if card.startswith("knowledge/cards/") and (tree / card).is_file()
+               for _, resolved in _links(tree, card)}
     problems = [
-        f"{rel}: an {rel.split('/')[2]} note that no index links to (knowledge/INDEX.md or knowledge/areas/*.md)"
+        f"{rel}: an {rel.split('/')[2]} note that no index or card links to (knowledge/INDEX.md, its cards)"
         for state in ("active", "review")
         for rel in sorted(_rels(tree, f"{NOTES}/{state}/**/*.md"), key=str.encode)
         if rel not in linked
@@ -555,7 +565,7 @@ class PrivacyRule:
     """One shape of leak: how bad it is, what finds it, and where it is not read.
 
     Attributes:
-        level: "FAIL" (a leak; `privacy` exits 1 and `digest --check` fails) or "WARN" (advisory).
+        level: "FAIL" (a leak; `privacy` exits 1 and `verify` fails) or "WARN" (advisory).
         find: The offending pieces of one line.
         evidence_only: Read only in *Where it came from* and *Evidence* sections and in `tracking/`.
         literature_exempt: Not read in *Literature* sections nor in `references.md`.
@@ -569,7 +579,20 @@ class PrivacyRule:
     placeholder_exempt: bool = False
 
 
+# Every file of a carrier's private folder starts with this line. Found as a line of its own anywhere that
+# travels, it is a private file pasted out whole, whatever the rest of it holds and whatever no terms list
+# names; written inside a sentence, as the method describes it, it is not.
+PRIVATE_SENTINEL = "confidential: never leaves this repository"
+PRIVATE_FOLDER = ".private"  # at the root: never under `docs/`, which a site generator publishes
+
+
+def _sentinels(text: str) -> list[str]:
+    bare = re.sub(r"^\s*(?:<!--|[#>*+`-])*\s*|\s*(?:-->|`)*\s*$", "", text)
+    return [PRIVATE_SENTINEL] if bare.casefold() == PRIVATE_SENTINEL else []
+
+
 PRIVACY_RULES: dict[str, PrivacyRule] = {
+    "private-record": PrivacyRule("FAIL", _sentinels),
     "email": PrivacyRule("FAIL", _emails, placeholder_exempt=True),
     "home-path": PrivacyRule("FAIL", _home_paths, placeholder_exempt=True),
     "forge-url": PrivacyRule("FAIL", _forge_paths, placeholder_exempt=True),
@@ -816,6 +839,7 @@ def commit_targets(repo: Path, rev_range: str, scratch: Path) -> tuple[list[Targ
         said = (error.stderr or "").strip().splitlines()
         raise RefusedError(f"--commits {rev_range}: not a range git reads here" + (f" ({said[-1]})" if said else "")) from None
     targets = []
+    private = private_folder(repo) + "/"
     for sha in shas:
         short = sha[:10]
         try:
@@ -824,8 +848,8 @@ def commit_targets(repo: Path, rev_range: str, scratch: Path) -> tuple[list[Targ
             message.write_text(git(repo, "log", "-1", "--format=%B", sha), encoding="utf-8", errors="surrogateescape")
             targets.append(Target(message, message.name, f"{short} message", None, repo))
             for rel, lines in _commit_files(repo, sha):
-                if not lines:
-                    continue
+                if not lines or rel.startswith(private):
+                    continue  # nothing added, or the carrier's private folder, whose files are private by design
                 if git(repo, "cat-file", "-t", f"{sha}:{rel}").strip() != "blob":
                     continue  # a submodule's pointer: the commit it names is that repository's to check
                 content = git(repo, "cat-file", "blob", f"{sha}:{rel}", binary=True)
@@ -1123,7 +1147,10 @@ def report(tree: Path, sessions: dict[str, list[tuple[str, str | None]]] | None 
         }
     return {
         "tree": str(tree),
-        "tokens": "estimate: ceil(characters / 4)",
+        # Measured on 2026-10-05 from usage deltas on one machine: bundle text runs at about 2.9 characters
+        # per token, so this estimate is about 1.4 times low. Every budget is set in this same unit, so
+        # relative comparisons and the budgets stand; only the absolute figure is low.
+        "tokens": "estimate: ceil(characters / 4), about 1.4× low for bundle text",
         "context_window": CONTEXT_WINDOW,
         "total": total,
         "folders": dict(sorted(folders.items(), key=lambda item: item[0].encode())),
@@ -1202,7 +1229,7 @@ def repo_carrier_id(repo: Path) -> str:
     return value
 
 
-def mint_carrier_id(repo: Path, today: str | None = None) -> str:
+def mint_carrier_id(repo: Path, today: str | None = None, upstream: str | None = None) -> str:
     """Writes a new random id into a repository's carrier file, creating the file if needed, and returns it.
 
     Refused when one is already stored, never replaced: records carry the id as their prefix
@@ -1213,7 +1240,12 @@ def mint_carrier_id(repo: Path, today: str | None = None) -> str:
     if present is not None:
         raise RefusedError(f"{repo}: already stores {present}; an id is minted once and never replaced")
     tree = repo / ".agents"
-    data = read_carrier(tree) or {"adopted": today or datetime.date.today().isoformat(), "upstream": "",
+    # The release names its home; an empty `upstream` is what marks the home itself (2026-10-07).
+    try:
+        home = read_frontmatter((tree / "README.md").read_text(encoding="utf-8"))[0].get("home") if (tree / "README.md").is_file() else None
+    except FrontmatterError:
+        home = None
+    data = read_carrier(tree) or {"adopted": today or datetime.date.today().isoformat(), "upstream": upstream or home or "",
                                    "adapted": [], "declined": []}
     minted = "r-" + secrets.token_hex(3)
     write_carrier(tree, {CARRIER_FIELD: minted, **data})
@@ -1327,6 +1359,290 @@ def record_id_check(files: list[Path], carrier: str | None) -> tuple[list[str], 
                                     f"not this carrier's {carrier}; fine only if this file keeps another carrier's records")
     return errors, warnings, counts
 
+
+# --- the decisions log ------------------------------------------------------------------------------
+# Artifact 6 is a table a tool reads: `| Id | Status | Decision | Why | Enforced in |`. The Status cell is
+# `<state> <date> · <decider>`, in fixed English keywords whatever language the log is written in, read by
+# column position so a log keeps its own headings. The decider is a person's stable alias (`h1`), an agent's
+# session (`agent s-...`) or `found` (read from the code); blank, on a migrated row, it counts as a person.
+# Only a person accepts: an agent that would change a person's decision writes a `proposed` row. The table
+# under *Looks deliberate, is not* is known debt, with columns of its own. Fenced blocks are examples.
+# Ids of the first schemes (`D-001`, `d-abcdef-017`) stay valid as written, so they are rows too.
+_DECISION_ID = r"(?:d-[0-9a-f]{6}-[0-9a-f]{3,6}|D-\d{3,4})"
+DECISION_STATUS = re.compile(
+    rf"^(?P<state>proposed|accepted|declined|deprecated|superseded by (?P<by>{_DECISION_ID}))"
+    r"\s+(?P<recorded>recorded\s+)?(?P<date>\d{4}-\d{2}-\d{2})"
+    rf"(?:\s*·\s*(?P<decider>h\d+|agent\s+s-[0-9a-f]{{6}}-[0-9a-f]{{3,6}}|found))?"
+    r"(?:\s*·\s*decides:\s*(?P<decides>h\d+))?$")
+SUPERSEDES = re.compile(rf"\bsupersedes\s+({_DECISION_ID})\b")
+DEBT_HEADING = "looks deliberate, is not"
+DECISION_COLUMNS = ("Id", "Status", "Decision", "Why", "Enforced in")
+TABLE_SEPARATOR = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$")
+_PATHLIKE = re.compile(r"^[\w./-]*(/[\w.-]+|\w\.(?:py|pyi|md|mdc|json|jsonc|ya?ml|toml|ini|cfg|sh|bash|js|mjs|cjs|ts|tsx|jsx|rs|go|java|kt|swift|rb|php|cs|c|h|cc|cpp|hpp|sql|html|css|txt|lock|gradle|xml|ps1|bat))$")
+# A dotted name with no such extension (`permissions.deny`, `Stores.start`) is a key or a symbol, not a file.
+
+
+def table_cells(line: str) -> list[str]:
+    """The cells of a markdown table row; a `|` escaped, or inside a code span, is part of its cell.
+
+    A code span opens with a run of backticks and closes with the next run of the same length (CommonMark),
+    so ```` ``` ```` is one span holding a fence; a run never closed is literal text.
+    """
+    cells, cell, i = [], [], 0
+    body = line.strip()
+    body = body[1:] if body.startswith("|") else body
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\" and i + 1 < len(body) and body[i + 1] == "|":
+            cell.append("|")
+            i += 2
+            continue
+        if ch == "`":
+            run = len(body[i:]) - len(body[i:].lstrip("`"))
+            close = re.compile(rf"(?<!`)`{{{run}}}(?!`)").search(body, i + run)
+            end = close.end() if close else i + run
+            cell.append(body[i:end])
+            i = end
+            continue
+        if ch == "|":
+            cells.append("".join(cell).strip())
+            cell = []
+        else:
+            cell.append(ch)
+        i += 1
+    if "".join(cell).strip():
+        cells.append("".join(cell).strip())
+    return cells
+
+
+@dataclass
+class DecisionRow:
+    """One row of a decisions log, its Status read (None where it does not parse)."""
+
+    id: str
+    where: str
+    status: re.Match | None
+    why: str
+    enforced: str
+
+    @property
+    def state(self) -> str:
+        return self.status.group("state").split()[0] if self.status else ""
+
+    @property
+    def decider(self) -> str:
+        return (self.status.group("decider") or "") if self.status else ""
+
+    def by_person(self) -> bool:
+        """Decided by a person: an alias, or no decider written (a migrated row), so an agent may not override it."""
+        return not self.decider or bool(re.fullmatch(r"h\d+", self.decider))
+
+
+def _decision_tables(path: Path) -> list[tuple[bool, list[tuple[int, str]]]]:
+    """Every table of a markdown file outside fences: (under the known-debt heading, its lines with numbers)."""
+    lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
+    tables: list[tuple[bool, list[tuple[int, str]]]] = []
+    current: list[tuple[int, str]] = []
+    debt = False
+    for number, (line, prose) in enumerate(zip(lines, _prose(lines)), 1):
+        heading = HEADING.match(line) if prose else None
+        if heading:
+            debt = heading.group(2).strip("*_ ").lower().startswith(DEBT_HEADING)
+        if prose and line.lstrip().startswith("|"):
+            if not current:
+                tables.append((debt, current))
+            current.append((number, line))
+        else:
+            current = []
+    return tables
+
+
+def _git_files(root: Path) -> set[str] | None:
+    try:
+        listed = git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    return {p for p in listed.split("\0") if p}
+
+
+def _repo_root(path: Path) -> Path:
+    try:
+        return Path(git(path.parent, "rev-parse", "--show-toplevel").strip())
+    except (subprocess.CalledProcessError, OSError):
+        return path.parent
+
+
+def decision_check(files: list[Path], today: datetime.date | None = None) -> tuple[list[str], list[str], dict[str, int]]:
+    """What is wrong with some decisions logs, what waits on a person, and how many rows there are.
+
+    Fails on a Status that does not read as `<state> <date> · <decider>`, a row that is not five columns,
+    a row written twice, a supersession not written both ways or naming a row the log does not hold, and an
+    agent's acceptance that supersedes a row a person decided (or one with no decider). Warns on every
+    proposed row, every reason marked `unconfirmed:`, and a backticked path in Enforced in that names no file:
+    a name cited enforces nothing.
+
+    Returns:
+        (errors, warnings, counts: rows, proposed, unconfirmed, debt).
+    """
+    today = today or datetime.date.today()
+    errors: list[str] = []
+    warnings: list[str] = []
+    counts = {"rows": 0, "proposed": 0, "unconfirmed": 0, "debt": 0}
+    for path in files:
+        if not path.is_file():
+            raise RefusedError(f"{path}: no such file; give the decisions log this repository keeps (its root file's map names it)")
+        rows: dict[str, DecisionRow] = {}
+        root = _repo_root(path)
+        known = None
+        for debt, table in _decision_tables(path):
+            for number, line in table:
+                cells = table_cells(line)
+                if not cells or not re.fullmatch(_DECISION_ID, cells[0]):
+                    continue
+                where = f"{path}:{number}"
+                if debt:
+                    counts["debt"] += 1
+                    continue
+                if len(cells) != len(DECISION_COLUMNS):
+                    errors.append(f"{where}: {cells[0]} has {len(cells)} columns; a decision row has five, "
+                                  f"{' | '.join(DECISION_COLUMNS)} (a four-column log: `bundle.py decisions FILE --migrate`)")
+                    continue
+                if cells[0] in rows:
+                    errors.append(f"{where}: {cells[0]} written twice (first at {rows[cells[0]].where})")
+                    continue
+                status = DECISION_STATUS.match(re.sub(r"[`*]", "", cells[1]).strip())
+                row = DecisionRow(cells[0], where, status, cells[3], cells[4])
+                rows[row.id] = row
+                counts["rows"] += 1
+                if status is None:
+                    errors.append(f"{where}: {row.id}: status {cells[1]!r} does not read as `<state> <date> · <decider>` "
+                                  "(proposed, accepted, declined, deprecated or superseded by d-...; a date; h<n>, "
+                                  "agent s-... or found)")
+                    continue
+                try:
+                    decided = datetime.date.fromisoformat(status.group("date"))
+                except ValueError:
+                    errors.append(f"{where}: {row.id}: {status.group('date')} is not a date")
+                    continue
+                if status.group("decides") and row.state != "proposed":
+                    errors.append(f"{where}: {row.id}: only a proposed row waits on someone (`decides:`)")
+                if row.state == "proposed":
+                    counts["proposed"] += 1
+                    warnings.append(f"{where}: {row.id}: proposed since {decided} ({(today - decided).days} days); "
+                                    f"only a person accepts it; waits on {status.group('decides') or 'a person'}")
+                if re.sub(r"^[\s*_`]+", "", row.why).lower().startswith("unconfirmed:"):
+                    counts["unconfirmed"] += 1
+                    warnings.append(f"{where}: {row.id}: why unconfirmed; a person confirms it or gives the reason")
+                for token in re.findall(r"`([^`\s]+)`", row.enforced):
+                    if any(c in token for c in "*?[") or not _PATHLIKE.match(token):
+                        continue
+                    if (root / token).exists():
+                        continue
+                    known = _git_files(root) if known is None else known
+                    if "/" not in token and known is not None and any(Path(p).name == token for p in known):
+                        continue
+                    warnings.append(f"{where}: {row.id}: Enforced in names `{token}`, which is no file here")
+        for row in rows.values():
+            if not row.status:
+                continue
+            by = row.status.group("by")
+            if by:
+                if by not in rows:
+                    errors.append(f"{row.where}: {row.id}: superseded by {by}, which this log does not hold")
+                elif f"supersedes {row.id}" not in rows[by].why:
+                    errors.append(f"{rows[by].where}: {by}: {row.id} says it is superseded by {by}, "
+                                  f"but {by}'s Why does not say `supersedes {row.id}`")
+            for old_id in SUPERSEDES.findall(row.why):
+                old = rows.get(old_id)
+                if old is None:
+                    errors.append(f"{row.where}: {row.id}: supersedes {old_id}, which this log does not hold")
+                    continue
+                if not old.status:
+                    continue
+                taken = row.state in ("accepted", "deprecated", "superseded")
+                if taken and old.status.group("by") != row.id:
+                    errors.append(f"{old.where}: {old_id}: {row.id} supersedes it, but its status does not say "
+                                  f"`superseded by {row.id}`")
+                if not taken and old.status.group("by") == row.id:
+                    errors.append(f"{old.where}: {old_id}: superseded by {row.id}, which is only {row.state}")
+                if row.state == "accepted" and row.decider.startswith("agent") and old.by_person():
+                    errors.append(f"{row.where}: {row.id}: an agent accepted a change to {old_id}, which a person "
+                                  f"decided; write it as proposed, for a person to accept")
+    return errors, warnings, counts
+
+
+def _first_dates(path: Path) -> dict[str, str]:
+    """The author date of the first commit that wrote each decision id into this log, following renames.
+
+    The author date, because a history rewrite gives every commit a new committer date and keeps the author's."""
+    try:
+        log = git(path.parent, "log", "--reverse", "--follow", "--format=%x00%as", "-p", "-U0", "--", path.name)
+    except (subprocess.CalledProcessError, OSError):
+        return {}
+    dates: dict[str, str] = {}
+    date = ""
+    for line in log.split("\n"):
+        if line.startswith("\0"):
+            date = line[1:].strip()
+        elif line.startswith("+") and not line.startswith("+++"):
+            for found in re.findall(_DECISION_ID, line):
+                dates.setdefault(found, date)
+    return dates
+
+
+def migrate_decisions(path: Path, today: datetime.date | None = None) -> tuple[str, list[tuple[str, str]], list[str]]:
+    """A four-column decisions log with the Status column added: each row `accepted recorded <date>`.
+
+    The date is that of the first commit that wrote the row's id into the log (`recorded`, because a bulk
+    conversion would otherwise date many rows to one day), or today for a row not yet committed; the decider
+    is left blank, which counts as a person. A table already in five columns, and the known-debt table,
+    are left as they are, so a second run changes nothing. Supersessions written in prose are not read:
+    mapping them is the update session's reading.
+
+    A four-column table under another header than the log's own — the commonest one among its tables of
+    decisions — is left as it is and named: an open, half-decided section holds rows that are `proposed`,
+    whatever its columns say, and only a person maps them.
+
+    Returns:
+        (the new text, [(id, date) for each row given a Status], [each table left as it is, with its line]).
+    """
+    if not path.is_file():
+        raise RefusedError(f"{path}: no such file; give the decisions log this repository keeps (its root file's map names it)")
+    today = today or datetime.date.today()
+    lines = path.read_text(encoding="utf-8").split("\n")
+    dates = None
+    migrated: list[tuple[str, str]] = []
+    left: list[str] = []
+    candidates = []
+    for debt, table in _decision_tables(path):
+        rows = [(n, table_cells(line)) for n, line in table]
+        ids = [c[0] for _, c in rows if c and re.fullmatch(_DECISION_ID, c[0])]
+        if debt or not ids or len(rows) < 2 or not TABLE_SEPARATOR.match(table[1][1]):
+            continue
+        if any(len(c) != 4 for _, c in rows):
+            continue
+        candidates.append((table, rows))
+    headers = Counter(tuple(c.lower() for c in rows[0][1]) for _, rows in candidates)
+    own = headers.most_common(1)[0][0] if headers else None  # the commonest header; a tie goes to the first one
+    for table, rows in candidates:
+        if tuple(c.lower() for c in rows[0][1]) != own:
+            left.append(f"line {table[0][0]}: | {' | '.join(rows[0][1])} | ({len(rows) - 2} rows)")
+            continue
+        dates = _first_dates(path) if dates is None else dates
+        for index, (number, cells) in enumerate(rows):
+            if index == 0:
+                cells = [cells[0], "Status", *cells[1:]]
+            elif index == 1:
+                cells = [cells[0], "---", *cells[1:]]
+            elif re.fullmatch(_DECISION_ID, cells[0]):
+                date = dates.get(cells[0]) or today.isoformat()
+                cells = [cells[0], f"accepted recorded {date}", *cells[1:]]
+                migrated.append((cells[0], date))
+            else:
+                cells = [cells[0], "", *cells[1:]]
+            lines[number - 1] = "| " + " | ".join(c.replace("|", "\\|") if "`" not in c else c for c in cells) + " |"
+    return "\n".join(lines), migrated, left
+
 # --- formats: frontmatter, carrier file, checksums, versions -----------------------------------------
 # Every format here is an industry one, read by a documented subset so the tool stays standard library
 # only: YAML frontmatter, TOML (`tomllib` reads it; a small writer writes the one file the tool owns),
@@ -1423,6 +1739,12 @@ class _Scanner:
         value = self.text[start : self.at].strip(" ")
         if value in ("", "~", "null"):
             return None
+        # A plain decimal integer and true or false read alike in every YAML parser: a subagent's maxTurns and
+        # omitClaudeMd need them (0.0.30). Everything else that YAML would type stays refused.
+        if re.fullmatch(r"(?:0|[1-9][0-9]*)", value):
+            return int(value)
+        if value in ("true", "false"):
+            return value == "true"
         if value[:1] in "&*!|>@`%-?:,=<[]{}#'\"" or PLAIN_REFUSED.search(value) or PLAIN_TYPED.fullmatch(value):
             raise self.fail(f"the plain scalar {value[:30]!r} is read differently by YAML parsers; quote it")
         return value
@@ -1604,7 +1926,10 @@ def dump_frontmatter(data: dict, comment: str | None = None, plain: bool = False
 # never listed in `SHA256SUMS`, a release never writes it, and it holds everything that used to be the
 # "repository's own fields" of several headers. TOML, read by `tomllib`.
 CARRIER_FILE = "carrier.toml"
-CARRIER_KEYS = ("carrier", "adopted", "upstream", "harvested_through", "adapted", "declined")
+CARRIER_TABLES = ("skills",)  # a role of the skill catalogue to the name installed here (method/skills/README.md)
+CARRIER_KEYS = ("carrier", "adopted", "upstream", "log", "skills", "surfaces", "harvested_through", "adapted", "declined",
+               "visibility", "private_folder")
+VISIBILITIES = ("public", "private")
 
 
 def _toml_str(value: str) -> str:
@@ -1626,14 +1951,21 @@ def _toml_str(value: str) -> str:
 def dump_carrier(data: dict) -> str:
     """The carrier file's TOML: known keys first in their order, strings and arrays of strings only."""
     lines = ["# This repository's own fields. Carrier-owned: never listed in SHA256SUMS, never written by a release."]
+    tables = {k: v for k, v in data.items() if k in CARRIER_TABLES and isinstance(v, dict)}
     for key in [*[k for k in CARRIER_KEYS if k in data], *sorted(k for k in data if k not in CARRIER_KEYS)]:
         value = data[key]
+        if key in tables:
+            continue
         if isinstance(value, str):
             lines.append(f"{key} = {_toml_str(value)}")
         elif isinstance(value, list) and all(isinstance(v, str) for v in value):
             lines.append(f"{key} = []" if not value else f"{key} = [\n" + "".join(f"  {_toml_str(v)},\n" for v in value) + "]")
         else:
             raise RefusedError(f"{CARRIER_FILE}: `{key}` must be a string or a list of strings")
+    for key, table in tables.items():  # TOML tables come after every top-level key
+        if not all(isinstance(k, str) and isinstance(v, str) for k, v in table.items()):
+            raise RefusedError(f"{CARRIER_FILE}: `[{key}]` maps names to strings")
+        lines += ["", f"[{key}]", *[f"{k} = {_toml_str(v)}" for k, v in table.items()]]
     return "\n".join(lines) + "\n"
 
 
@@ -1646,7 +1978,8 @@ def read_carrier(tree: Path) -> dict | None:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as error:
         raise RefusedError(f"{path}: not valid TOML ({error})") from error
-    bad = [k for k, v in data.items() if not (isinstance(v, str) or (isinstance(v, list) and all(isinstance(i, str) for i in v)))]
+    bad = [k for k, v in data.items() if not (isinstance(v, str) or (isinstance(v, list) and all(isinstance(i, str) for i in v))
+                                              or (k in CARRIER_TABLES and isinstance(v, dict) and all(isinstance(i, str) for i in v.values())))]
     if bad:
         raise RefusedError(f"{path}: {', '.join(bad)} must be strings or lists of strings")
     return data
@@ -2429,6 +2762,37 @@ def _scope_report(scope: Scope, verb: str) -> list[str]:
 # --- verify ----------------------------------------------------------------------------------------
 
 
+def private_folder(repo: Path, carrier: dict | None = None) -> str:
+    """The repository's private folder, relative to its root: `private_folder` in its carrier file, else the default."""
+    if carrier is None:
+        try:
+            carrier = read_carrier(repo / ".agents") or {}
+        except RefusedError:
+            carrier = {}
+    return str(carrier.get("private_folder") or PRIVATE_FOLDER).strip("/")
+
+
+def private_folder_problems(repo: Path, carrier: dict) -> list[str]:
+    """The private-folder fields read, and a public carrier's private folder kept out of git."""
+    problems = []
+    visibility = carrier.get("visibility", "")
+    if visibility and visibility not in VISIBILITIES:
+        problems.append(f"{CARRIER_FILE}: `visibility` is {visibility!r}; it is `public` or `private`")
+    folder = str(carrier.get("private_folder") or PRIVATE_FOLDER)
+    if folder.startswith("/") or ".." in Path(folder).parts:
+        problems.append(f"{CARRIER_FILE}: `private_folder` {folder!r} must be a path inside the repository")
+        return problems
+    if visibility == "public":
+        try:
+            tracked = [p for p in git(repo, "ls-files", "-z", "--", private_folder(repo, carrier)).split("\0") if p]
+        except (subprocess.CalledProcessError, OSError):
+            tracked = []
+        if tracked:
+            problems.append(f"{private_folder(repo, carrier)}/: this carrier is public and git tracks {len(tracked)} files "
+                            "of its private folder; untrack them and keep the folder in .gitignore")
+    return problems
+
+
 def verify_problems(tree: Path, privacy: PrivacyReport | None = None, release: bool = False) -> list[str]:
     """Everything a carrier's gate fails on: the copy is the release, it links and routes, it leaks nothing.
 
@@ -2469,7 +2833,28 @@ def verify_problems(tree: Path, privacy: PrivacyReport | None = None, release: b
         problems += [f"{CARRIER_FILE}: unknown key `{k}`" for k in carrier if k not in CARRIER_KEYS]
         problems += [f"{CARRIER_FILE}: `{k}` must be a list of strings" for k in ("adapted", "declined")
                      if k in carrier and not isinstance(carrier[k], list)]
+        if not str(carrier.get("upstream") or "").strip() and not (tree.parent / "sources/bundle").is_dir():  # a home writes releases from there
+            problems.append(f"{CARRIER_FILE}: `upstream` is empty, which marks the home repository; set it to the id of "
+                            "the repository this one takes releases from (the release names it as `home` in README.md)")
+        problems += installed_catalogue_problems(tree.parent, carrier.get("skills"))
+        problems += carrier_surface_problems(tree.parent, carrier.get("surfaces"))
+        if (tree.parent / DOCS_MAP).is_file():  # the map and its documents' references (docs-drift --map, --refs)
+            problems += docs_map_problems(tree.parent) + docs_ref_problems(tree.parent)
+        problems += private_folder_problems(tree.parent, carrier)
     return problems + incoming_problems(tree) + installed_skill_problems(tree.parent, tree)
+
+
+def installed_catalogue_problems(repo: Path, skills: object) -> list[str]:
+    """The catalogue's roles a carrier says it has: each name must be installed in the repository's skill folder,
+    so the catalogue never offers a skill this machine lacks. A plugin's or a user's skill (`plugin:name`,
+    `user:name`) lives outside the repository and is listed, not checked."""
+    if skills is None:
+        return []
+    if not isinstance(skills, dict):
+        return [f"{CARRIER_FILE}: `skills` must be a table from a role to an installed skill's name (`[skills]`)"]
+    return [f"{CARRIER_FILE}: `skills.{role}` names `{name}`, which is not installed in .claude/skills/"
+            for role, name in skills.items()
+            if ":" not in name and not (repo / ".claude/skills" / name / "SKILL.md").is_file()]
 
 
 def check_local(repo: Path) -> list[str]:
@@ -2643,6 +3028,38 @@ def deny_covers(rule_path: str, files: list[str], repo: Path, settings_dir: Path
     return covered
 
 
+def attribution_warnings(repo: Path) -> list[str]:
+    """Where a repository would let the host credit an assistant, or its own hooks do not run: warnings.
+
+    The host adds an attribution line by default; only the committed `attribution` setting, with empty
+    strings, turns it off wherever the repository is cloned. A repository that keeps git hooks in a folder
+    of its own runs them only once `core.hooksPath` points there, which is set per clone. Neither is a failure:
+    the repository may not use that host, and a fresh clone has not set the path yet; both are said.
+    """
+    out = []
+    settings = repo / ".claude/settings.json"
+    if settings.is_file():
+        try:
+            data = json.loads(settings.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            data = {}
+        attribution = data.get("attribution") if isinstance(data, dict) else None
+        if not (isinstance(attribution, dict) and attribution.get("commit") == "" and attribution.get("pr") == ""):
+            out.append(f"{settings.relative_to(repo)}: no `attribution` setting with empty `commit` and `pr`, so the host "
+                       "adds its attribution line to commits and pull requests (`prompt-context.md` §*The platform's own mechanics*)")
+    for folder in (".githooks", ".hooks"):
+        if (repo / folder).is_dir() and any((repo / folder).iterdir()):
+            try:
+                path = git(repo, "config", "--get", "core.hooksPath").strip()
+            except (subprocess.CalledProcessError, OSError):
+                path = ""
+            if path.rstrip("/") != folder:
+                out.append(f"{folder}/ holds git hooks and core.hooksPath is {path or 'unset'}, so they do not run: "
+                           f"git config core.hooksPath {folder}")
+            break
+    return out
+
+
 def user_deny_warnings(repo: Path) -> list[str]:
     """Deny rules in the user's own settings that cover files committed in this repository: every committed
     file a rule matches, broader than the files a gate or hook writes, which the tool cannot tell apart.
@@ -2687,7 +3104,7 @@ def user_deny_warnings(repo: Path) -> list[str]:
 # it may read. They stand in for the cost caps (a normal session at most 1.5 times a session without the
 # bundle, one that consults the knowledge at most twice), which only a measured run can check; a budget
 # crossed is a release that grew what every session pays for. Set at 0.0.22 to the measured size plus a
-# tenth.
+# tenth. In the report's unit, characters over four, which runs about 1.4 times low for bundle text.
 BUDGETS = {"coding": 10_100, "card": 360, "review": 6_900}
 def largest_card(tree: Path) -> tuple[str, int]:
     """(note, estimated tokens) of the largest card: what one lookup from the index costs."""
@@ -2730,6 +3147,503 @@ def export(tree: Path, dest: Path) -> list[str]:
         (dest / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(tree / rel, dest / rel)
     return rels
+
+
+# --- documentation drift: a carrier's map of documents to the paths they describe ---------------------
+# A document that agents load or follow goes stale when the code it describes changes without it. Review
+# misses it; this checks it from the diff, with no model (`method/prompt-context.md`, principle 16). The map
+# is the carrier's own file, `docs-map.toml` at the repository's root:
+#
+#     [[doc]]
+#     path = "docs/tools.md"            # the document
+#     watches = ["src/tools/**/*.py"]   # what it describes, globs over tracked files
+#     reason = "it documents every tool's flags"
+#     blocks = true                      # fail a range (true) or warn (false)
+#     refs = false                       # optional: skip its reference check, when it describes another repository
+#
+# A commit escapes a blocking rule with a `docs-unchanged: <reason>` line in its message.
+
+DOCS_MAP = "docs-map.toml"
+DOCS_ESCAPE = re.compile(r"^docs-unchanged:[ \t]*(\S.*)$", re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class DocRule:
+    doc: str
+    watches: tuple[str, ...]
+    reason: str
+    blocks: bool
+    refs: bool = True
+
+
+@dataclass(frozen=True)
+class Drift:
+    doc: str
+    blocks: bool
+    changed: tuple[str, ...]  # the watched paths that changed without the document
+
+
+def _path_glob(pattern: str) -> re.Pattern[str]:
+    """A glob over repository paths: `**` crosses folders, `*` and `?` stay inside one."""
+    out, i = "", 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out, i = out + "(?:.*/)?", i + 3
+        elif pattern.startswith("**", i):
+            out, i = out + ".*", i + 2
+        elif pattern[i] == "*":
+            out, i = out + "[^/]*", i + 1
+        elif pattern[i] == "?":
+            out, i = out + "[^/]", i + 1
+        else:
+            out, i = out + re.escape(pattern[i]), i + 1
+    return re.compile(out + r"\Z")
+
+
+def docs_rules(repo: Path) -> list[DocRule]:
+    """The carrier's map, or no rules when it keeps none."""
+    path = repo / DOCS_MAP
+    if not path.is_file():
+        return []
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as error:
+        raise RefusedError(f"{path}: not valid TOML ({error})") from error
+    rules = []
+    for entry in data.get("doc", []):
+        watches = entry.get("watches", [])
+        rules.append(DocRule(str(entry.get("path", "")), tuple(watches) if isinstance(watches, list) else (str(watches),),
+                             str(entry.get("reason", "")), bool(entry.get("blocks", False)), bool(entry.get("refs", True))))
+    return rules
+
+
+def _drifts(rules: list[DocRule], changed: set[str]) -> list[Drift]:
+    found = []
+    for rule in rules:
+        hits = sorted(p for p in changed if any(_path_glob(g).match(p) for g in rule.watches))
+        if hits and rule.doc not in changed:
+            found.append(Drift(rule.doc, rule.blocks, tuple(hits)))
+    return found
+
+
+def _changed_in(repo: Path, rev_range: str) -> set[str]:
+    """Every path a range touched, a rename counted on both sides."""
+    out = git(repo, "diff", "--name-status", "-M", "-z", rev_range)
+    fields = [f for f in out.split("\0") if f]
+    paths, i = set(), 0
+    while i < len(fields):
+        status = fields[i]
+        width = 2 if status[:1] in ("R", "C") else 1
+        paths.update(fields[i + 1:i + 1 + width])
+        i += 1 + width
+    return paths
+
+
+def docs_escapes(repo: Path, rev_range: str) -> list[str]:
+    """The reasons the commits of a range give for leaving the documents unchanged; a bare trailer gives none."""
+    messages = git(repo, "log", "--format=%B%x00", rev_range)
+    return [m.group(1).strip() for body in messages.split("\0") for m in DOCS_ESCAPE.finditer(body)]
+
+
+def docs_drift_range(repo: Path, rev_range: str) -> tuple[list[Drift], list[Drift]]:
+    """(failures, warnings) over a range: a blocking rule whose watched paths changed without its document fails,
+    unless a commit in the range says why; a warning rule warns."""
+    drifts = _drifts(docs_rules(repo), _changed_in(repo, rev_range))
+    escaped = bool(docs_escapes(repo, rev_range))
+    return [d for d in drifts if d.blocks and not escaped], [d for d in drifts if not d.blocks or escaped]
+
+
+def docs_drift_staged(repo: Path) -> list[Drift]:
+    """What a commit of the staged changes would drift, as warnings: its message, and any escape, do not exist yet."""
+    staged = {p for p in git(repo, "diff", "--cached", "--name-only", "-z").split("\0") if p}
+    return _drifts(docs_rules(repo), staged)
+
+
+def docs_map_problems(repo: Path) -> list[str]:
+    """The map itself: every document exists, every glob matches a tracked file, every rule gives a reason."""
+    files = _git_files(repo) or set()
+    problems = []
+    for rule in docs_rules(repo):
+        if not (repo / rule.doc).is_file():
+            problems.append(f"{DOCS_MAP}: {rule.doc}: missing")
+        problems += [f"{DOCS_MAP}: {rule.doc}: {g}: matches no tracked file" for g in rule.watches
+                     if not any(_path_glob(g).match(f) for f in files)]
+        if not rule.reason.strip():
+            problems.append(f"{DOCS_MAP}: {rule.doc}: a rule needs a reason, or it cannot be narrowed or dropped later")
+    return problems
+
+
+DOC_PATH = re.compile(r"`([\w.\-/]+/[\w.\-/]*\w)`")  # a backticked path with a folder in it
+
+
+def docs_ref_problems(repo: Path) -> list[str]:
+    """In each mapped document, a relative link or a backticked repository path that does not exist."""
+    problems = []
+    files = _git_files(repo) or set()
+    for rule in docs_rules(repo):
+        doc = repo / rule.doc
+        if not doc.is_file() or not rule.refs:
+            continue
+        text = doc.read_text(encoding="utf-8")
+        for target in re.findall(r"\]\(([^)#\s]+)(?:#[^)]*)?\)", text):
+            if "://" not in target and not target.startswith("mailto:") and not (doc.parent / target).exists():
+                problems.append(f"{rule.doc}: links to {target}, which does not exist")
+        for target in DOC_PATH.findall(text):
+            if target.startswith(("http", "~", "/")) or "*" in target or re.match(r"^[A-Z][A-Z_]+/", target):
+                continue  # a URL, a home path, a glob, or a placeholder such as DIR/
+            bare = target.rstrip("/")
+            # a path is named from a folder the document takes for granted: it exists when a tracked path ends in it
+            if not any(f == bare or f.endswith("/" + bare) or f.startswith(bare + "/") or f"/{bare}/" in f"/{f}" for f in files):
+                problems.append(f"{rule.doc}: names `{target}`, which is not in the repository")
+    return problems
+
+
+def docs_report(repo: Path, since: str = "7d") -> dict:
+    """The weekly reading: each rule's triggers and escapes, with their reasons; documents whose watched paths
+    changed after the document's own last commit; pairs history suggests, never added by this."""
+    days = int(since.rstrip("d")) if since.rstrip("d").isdigit() else 7
+    log = git(repo, "log", f"--since={days}.days", "--format=%x01%H%x00%B%x00", "--name-only", "-z")
+    commits = []
+    for chunk in log.split("\x01")[1:]:
+        parts = chunk.split("\0")
+        body, files = (parts[1] if len(parts) > 1 else ""), {p.strip("\n") for p in parts[2:] if p.strip("\n")}
+        commits.append((body, files))
+    rules = docs_rules(repo)
+    report: dict = {"rules": {}, "stale": [], "suggested": []}
+    for rule in rules:
+        triggered = [(b, f) for b, f in commits if _drifts([rule], f)]
+        reasons = [m.group(1).strip() for b, _ in triggered for m in DOCS_ESCAPE.finditer(b)]
+        report["rules"][rule.doc] = {"triggered": len(triggered), "escapes": len(reasons), "reasons": reasons,
+                                     "escape_rate": round(len(reasons) / len(triggered), 2) if triggered else 0.0}
+        watched = [f for f in (_git_files(repo) or set()) if any(_path_glob(g).match(f) for g in rule.watches)]
+        code = git(repo, "log", "-1", "--format=%H", "--", *watched).strip() if watched else ""
+        doc = git(repo, "log", "-1", "--format=%H", "--", rule.doc).strip()
+        # stale by commit order, not by clock: the document's last commit comes strictly before the code's
+        if code and doc and code != doc and subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", doc, code],
+                                                            capture_output=True).returncode == 0:
+            report["stale"].append(rule.doc)
+    mapped = {r.doc for r in rules}
+    pairs: dict[tuple[str, str], int] = {}
+    for _, files in commits:
+        for doc in files & mapped:
+            for other in files - mapped:
+                pairs[(doc, other)] = pairs.get((doc, other), 0) + 1
+    report["suggested"] = sorted(([d, o, n] for (d, o), n in pairs.items() if n >= 2), key=lambda r: -r[2])[:10]
+    return report
+
+
+# --- a shell command that only reads -----------------------------------------------------------------
+# Moved here from the trigger eval in 0.0.30 so the researcher agent's hook and the eval share one classifier,
+# reviewed adversarially twice (`meta/reviews/2026-10-07-trigger-eval-adversarial.md` in the home).
+
+# A shell command runs only when it reads: no redirection, chaining, substitution, nor a tool that writes.
+READ_ONLY = re.compile(r"^(ls|cat|head|tail|wc|find|grep|rg|pwd|echo|git (status|log|diff|show|ls-files)|git branch( (--list|-a|-r|-v|-vv|--show-current))*$|git remote( (-v|--verbose))?$|git stash list|sort)(\s|$)")
+# Flags of an allowed reader that write or run another program, matched also when a long one is abbreviated:
+# find's -exec*, -ok*, -delete and -f* (-fprint, -fprintf, -fls); rg's --pre, --hostname-bin and --search-zip (and
+# -z); sort's -o, --output and --compress-program; git's --output, --ext-diff and --textconv; tail's -f and -F,
+# which never end. Two reviews on 2026-10-07 found these holes.
+WRITING_SHORT = re.compile(r"-(exec\w*|ok\w*|delete|fprint\w*|fls)")  # find's, checked on find only
+WRITING_LONG = ("output", "pre", "hostname-bin", "search-zip", "compress-program", "ext-diff", "textconv")
+SHORT_BY_COMMAND = {"rg": "z", "sort": "o", "tail": "fF"}  # short flags dangerous only for that reader
+LONG_BY_COMMAND = {"tail": ("follow", "retry")}  # long ones, by any prefix
+# Reads may be chained or piped, as sessions look with compound commands (stage 2, 2026-10-07); each part must read.
+SEPARATORS = {"&&", "||", ";", "|"}
+QUIET = {"2>&1", "2>/dev/null", ">/dev/null", "1>/dev/null", "&>/dev/null"}  # the error stream merged or dropped
+
+
+def shell_words(command: str) -> list[str] | None:
+    """The command split as the shell would split it, quotes removed, operators as words of their own; None when
+    the shell would expand or substitute something first (`$`, a backtick, braces outside single quotes), or when
+    a quote is left open. Globs (`*`, `?`, `[`) stay: they only name files, and the fixture holds no file named
+    like a flag. A `#` is a plain character, so a comment can never hide what follows it."""
+    words, word, quote, started, i = [], "", None, False, 0
+    while i < len(command):
+        ch = command[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            else:
+                word += ch
+        elif quote == '"':
+            if ch == '"':
+                quote = None
+            elif ch in "$`":
+                return None
+            elif ch == "\\" and i + 1 < len(command):
+                i += 1
+                word += command[i]
+            else:
+                word += ch
+        elif ch in "'\"":
+            quote, started = ch, True
+        elif ch in "$`{}":
+            return None
+        elif ch == "\\":
+            if i + 1 >= len(command):
+                return None
+            i += 1
+            word += command[i]
+            started = True
+        elif ch in " \t":  # bash splits on these only
+            if started:
+                words.append(word)
+            word, started = "", False
+        elif ch in ";&|<>()":
+            if started:
+                words.append(word)
+            run = ch
+            while i + 1 < len(command) and command[i + 1] in ";&|<>()":
+                i += 1
+                run += command[i]
+            words.append("\0" + run)  # an operator, marked so a quoted ";" is never one
+            word, started = "", False
+        else:
+            word += ch
+            started = True
+        i += 1
+    if quote:
+        return None
+    if started:
+        words.append(word)
+    return words
+
+
+def _writes(segment: list[str]) -> bool:
+    """Whether one reader's arguments hold a flag that writes, runs another program, or never ends."""
+    for token in segment[1:]:
+        if token.startswith("--"):
+            name = token[2:].split("=", 1)[0]
+            if name and any(option.startswith(name) for option in WRITING_LONG + LONG_BY_COMMAND.get(segment[0], ())):
+                return True
+        elif segment[0] == "find" and WRITING_SHORT.fullmatch(token):
+            return True
+        elif token.startswith("-") and set(token[1:]) & set(SHORT_BY_COMMAND.get(segment[0], "")):
+            return True
+    return False
+
+
+def command_segments(command: str) -> list[list[str]] | None:
+    """The simple commands a shell line chains with `&&`, `||`, `;` or `|`, as words, the error stream's merging or
+    dropping folded away; None when it holds anything else: a redirection, an expansion or substitution, a
+    subshell, a background job or a line break."""
+    if not command.strip() or any(mark in command for mark in ("\n", "\r", "\0")):
+        return None
+    words = shell_words(command.strip())
+    if words is None:
+        return None
+    joined: list[str] = []  # the error stream merged or dropped, as one quiet word
+    k = 0
+    while k < len(words):
+        fd = words[k] if words[k] in ("1", "2") and k + 1 < len(words) and words[k + 1].startswith("\0") else ""
+        op, target = (words[k + 1], words[k + 2:k + 3]) if fd else (words[k], words[k + 1:k + 2])
+        if op.startswith("\0") and target and not target[0].startswith("\0") and fd + op[1:] + target[0] in QUIET:
+            joined.append("\0quiet")
+            k += 3 if fd else 2
+            continue
+        joined.append(words[k])
+        k += 1
+    segments, current = [], []
+    for w in joined:
+        if w == "\0quiet":
+            continue
+        if w.startswith("\0"):
+            if w[1:] not in SEPARATORS:
+                return None  # a redirection, a subshell or a background job
+            segments.append(current)
+            current = []
+        else:
+            current.append(w)
+    segments.append(current)
+    return [s[:1] + s[3:] if s[:2] == ["git", "-C"] and len(s) > 3 else s for s in segments]  # git -C DIR reads
+
+
+def _reads(segment: list[str]) -> bool:
+    return bool(segment) and bool(READ_ONLY.match(" ".join(segment))) and not _writes(segment)
+
+
+def read_only(command: str) -> bool:
+    """A shell command that only reads the repository, run so a session may look before it chooses: one read, or
+    reads joined by `&&`, `||`, `;` or `|`, with the error stream merged or dropped at most. Any other redirection,
+    an expansion or substitution, a background job or a line break refuses the whole command."""
+    segments = command_segments(command)
+    return segments is not None and all(_reads(segment) for segment in segments)
+
+
+# The researcher agent's shell: a read, or `curl` fetching a page whole into a temporary folder outside the repository
+# (a summarising fetch once contradicted the text it summarised). Its own hook enforces it (`agents/researcher.md`).
+CURL_FLAGS = {"-s", "-S", "-L", "-f", "-I", "--silent", "--show-error", "--location", "--fail", "--head", "--compressed",
+              "--create-dirs"}  # the folders made are the output's, checked to be in the scratch
+CURL_VALUED = {"-A", "--user-agent", "-m", "--max-time", "--retry"}
+
+
+def _curl_into_scratch(segment: list[str], repo: Path) -> bool:
+    if segment[:1] != ["curl"]:
+        return False
+    scratch = Path(tempfile.gettempdir()).resolve()
+    urls, i = 0, 1
+    while i < len(segment):
+        token = segment[i]
+        if token in ("-o", "--output") or token.startswith("--output="):
+            target = token.split("=", 1)[1] if "=" in token else (segment[i + 1] if i + 1 < len(segment) else "")
+            i += 1 if "=" in token else 2
+            path = Path(target).expanduser().resolve()
+            if not target or scratch not in path.parents or repo.resolve() in (path, *path.parents):
+                return False
+            continue
+        if token in CURL_VALUED:
+            i += 2
+            continue
+        if token in CURL_FLAGS or (re.fullmatch(r"-[sSLfI]+", token) is not None):
+            i += 1
+            continue
+        if re.match(r"^https?://", token):
+            urls, i = urls + 1, i + 1
+            continue
+        return False  # any other flag: data to send, a config file, an upload, a name taken from the URL
+    return urls >= 1
+
+
+def research_allowed(command: str, repo: Path) -> bool:
+    """Whether the researcher's hook lets a shell command run: every part reads, or fetches into the scratch."""
+    segments = command_segments(command)
+    return segments is not None and all(_reads(s) or _curl_into_scratch(s, repo) for s in segments)
+
+
+# --- lookup: the index's rows a change matches --------------------------------------------------------
+# Reading the whole index costs a session several thousand tokens on every later turn; a change usually needs one
+# to three of its rows. `bundle.py lookup` ranks the *By what you are about to do* rows by a change's words, files
+# or diff, against each row, its card and the note's `cues` (what such a change would contain). It prints the rows
+# and says where the index is when nothing matches; the wiring decides when to trust it (0.0.30, behind a gate).
+
+LOOKUP_STOP = set("""a an the and or of to in on for with by from as at is are be been being it its this that these
+those which who what when where how why not no do does did done any all each every some such than then there their
+them they you your we our us can could would should will may might must one two more most less only own same so very
+just into out over under up down off about again once here both few other too now if else because while during before
+after above below between through until make makes made add adds added use uses used using new also way like via per
+get gets set sets let take takes""".split())
+
+
+def _stem(word: str) -> str:
+    for suffix in ("ingly", "edly", "ing", "ers", "ies", "ied", "ed", "es", "er", "ly", "s"):
+        if len(word) > len(suffix) + 3 and word.endswith(suffix):
+            return word[: -len(suffix)] + ("y" if suffix in ("ies", "ied") else "")
+    return word
+
+
+def _lookup_tokens(text: str) -> list[str]:
+    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", text)  # camelCase splits
+    return [_stem(w) for w in (m.lower() for m in re.findall(r"[A-Za-z][A-Za-z0-9]*", text.replace("_", " ")))
+            if w not in LOOKUP_STOP and len(w) >= 3]
+
+
+@dataclass(frozen=True)
+class LookupHit:
+    slug: str
+    do: str
+    card: str
+    wrong_when: str
+    score: float
+
+
+def _bm25(docs: list[list[str]]) -> tuple[list[collections.Counter], list[int], float, dict[str, float]]:
+    counts = [collections.Counter(d) for d in docs]
+    lengths = [len(d) for d in docs]
+    df = collections.Counter(w for c in counts for w in c)
+    n = len(docs)
+    return counts, lengths, (sum(lengths) / n if n else 0.0), {w: math.log(1 + (n - c + 0.5) / (c + 0.5)) for w, c in df.items()}
+
+
+def lookup(tree: Path, text: str, top: int = 3, floor: float = 0.5) -> list[LookupHit]:
+    """The index's rows that match a change, best first, at most `top`, dropping hits under `floor` of the best."""
+    index = (tree / "knowledge/INDEX.md").read_text(encoding="utf-8")
+    section = index.split("## By what you are about to do", 1)[-1].split("\n## ", 1)[0]
+    rows = [m.groups() for m in re.finditer(r"^\| (.+?) \| \[([^\]]+)\]\((cards/[^)]+)\)[^|]*\| (.+?) \|$", section, re.M)]
+    if not rows:
+        return []
+    def cues(slug: str) -> list[str]:
+        for state in ("active", "review"):
+            path = tree / f"{NOTES}/{state}/{slug}.md"
+            if path.is_file():
+                try:
+                    return list(read_frontmatter(path.read_text(encoding="utf-8"))[0].get("cues") or [])
+                except FrontmatterError:
+                    return []
+        return []
+    def card(rel: str) -> str:
+        path = tree / "knowledge" / rel
+        return " ".join(re.findall(r"\*\*(?:Claim|Applies if|Not when|Check)\.\*\* (.+)", path.read_text(encoding="utf-8"))) \
+            if path.is_file() else ""
+    layers = [(_bm25([_lookup_tokens(do + " " + wrong) for do, _, _, wrong in rows]), 1.0),
+              (_bm25([_lookup_tokens(card(rel)) for _, _, rel, _ in rows]), 0.6),
+              (_bm25([_lookup_tokens(" ".join(cues(slug))) for _, slug, _, _ in rows]), 1.0)]
+    query = collections.Counter(_lookup_tokens(text))
+    best: dict[str, tuple[float, int]] = {}
+    for i, (_, slug, _, _) in enumerate(rows):
+        score = 0.0
+        for (counts, lengths, avg, idf), weight in layers:
+            for word, qf in query.items():
+                if word in counts[i]:
+                    f = counts[i][word]
+                    score += weight * idf[word] * f * 2.2 / (f + 1.2 * (0.25 + 0.75 * lengths[i] / avg)) * min(qf, 3) ** 0.5
+        if slug not in best or score > best[slug][0]:
+            best[slug] = (score, i)
+    ranked = sorted(best.values(), key=lambda pair: -pair[0])
+    if not ranked or ranked[0][0] <= 0:
+        return []
+    return [LookupHit(rows[i][1], rows[i][0], rows[i][2], rows[i][3], round(s, 2))
+            for s, i in ranked[:top] if s >= floor * ranked[0][0]]
+
+
+def lookup_query(text: str = "", files: list[Path] | None = None, diff: str | None = None) -> str:
+    """A change as words: its description, its files' names and contents, a diff with changed lines counted twice."""
+    parts = [text]
+    for path in files or []:
+        parts.append(path.name + " " + (path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""))
+    for line in (diff or "").split("\n"):
+        changed = line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+        parts.append(line[1:] + " " + line[1:] if changed else line[4:] if line.startswith(("+++", "---")) else line)
+    return "\n".join(parts)
+
+
+# --- the close's deterministic part ----------------------------------------------------------------
+# A close is mostly judgement (the entry's words, what went wrong, the hand-off); the checks around it are not,
+# and were run by hand one by one. `bundle.py close` runs them in order and fails on any (`method/skills/close`).
+
+@dataclass(frozen=True)
+class CloseStep:
+    name: str
+    failed: bool
+    lines: tuple[str, ...]
+
+
+def close_report(repo: Path, base: str | None = None) -> list[CloseStep]:
+    """Every check a close runs that needs no judgement, over the session's range when `base` is given."""
+    tree = repo / ".agents"
+    steps = []
+    problems = verify_problems(tree) if tree.is_dir() else [f"{tree}: no bundle"]
+    steps.append(CloseStep("verify", bool(problems), tuple(problems)))
+    rev = f"{base}..HEAD" if base else None
+    found, read, _ = trailer_problems(repo, rev)
+    steps.append(CloseStep("trailers", bool(found), tuple(found) or (f"no attribution line over {read}",)))
+    records = [p for p in (carrier_log(repo), repo / "docs/decisions.md", repo / "docs/roadmap.md",
+                           repo / "meta/decisions.md", repo / "meta/roadmap.md") if p.is_file()]
+    carrier = stored_carrier_id(repo) if (tree / CARRIER_FILE).is_file() else None
+    errors, warnings, _ = record_id_check(records, carrier) if records else ([], [], {})
+    steps.append(CloseStep("ids", bool(errors), tuple(errors + warnings) or (f"{len(records)} records read",)))
+    logs = [p for p in (repo / "docs/decisions.md", repo / "meta/decisions.md") if p.is_file()]
+    d_errors, d_warnings, _ = decision_check(logs) if logs else ([], [], {})
+    steps.append(CloseStep("decisions", bool(d_errors), tuple(d_errors + d_warnings) or ("no proposed or unconfirmed row",)))
+    if (repo / DOCS_MAP).is_file() and rev:
+        fails, warns = docs_drift_range(repo, rev)
+        steps.append(CloseStep("docs-drift", bool(fails), tuple(f"{d.doc}: not changed, while {', '.join(d.changed[:3])} did"
+                                                                for d in fails + warns) or ("no document left behind",)))
+    else:
+        steps.append(CloseStep("docs-drift", False, ("no docs-map.toml, or no base given",)))
+    memory = memory_dir(repo.resolve())
+    lone = [m for m in memory_report(memory, repo.resolve()) if m.searched and not m.found_in and not m.partly] \
+        if memory.is_dir() else []
+    steps.append(CloseStep("memory", False, tuple(f"only on this machine: {m.name}" for m in lone) or ("nothing only on this machine",)))
+    return steps
 
 
 # --- skills, and the bookkeeping a close runs -------------------------------------------------------
@@ -2831,9 +3745,195 @@ def installed_skill_problems(repo: Path, tree: Path, into: str = SKILLS_INTO) ->
     return problems
 
 
-ENTRY_HEADING = re.compile(r"^## \d{4}-\d{2}-\d{2}\b")
+# --- the other assistants' surfaces, generated from what Claude Code reads ------------------------------
+# Cursor and Copilot read `AGENTS.md`, and Claude Code's skill and subagent folders for compatibility
+# (`prompt-context.md`, *What each surface can actually do*). What has no common place is generated here:
+# per-area rules (one glob in three spellings), a subagent's tool limit, and Copilot's pointer to `AGENTS.md`.
+# The source is always the file Claude Code reads; each copy names it, and `verify` fails a stale or edited
+# copy when the carrier lists the assistant in `surfaces`. Experimental from 0.0.30.
+
+SURFACE_KINDS = ("cursor", "copilot")
+SURFACE_MARK = re.compile(r"Generated by bundle\.py surfaces from (.+?); edit that file, never this one")
+RULES_FROM, AGENTS_FROM = ".claude/rules", ".claude/agents"
+COPILOT_POINTER = ".github/copilot-instructions.md"
+COPILOT_TOOLS = {"Read": "read", "Grep": "search", "Glob": "search", "Bash": "execute", "Edit": "edit", "Write": "edit",
+                 "MultiEdit": "edit", "NotebookEdit": "edit", "WebFetch": "web", "WebSearch": "web", "Agent": "agent",
+                 "Task": "agent"}
+WRITING_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+
+
+def _surface_mark(source: str) -> str:
+    return f"Generated by bundle.py surfaces from {source}; edit that file, never this one"
+
+
+def _generated_from(text: str) -> str | None:
+    """The source a generated copy names, or None for a file written by hand: only the mark's exact line where
+    this command writes it counts (the frontmatter's first comment, or an HTML comment heading the file), so a
+    file that merely quotes the mark is never taken for a copy, and never removed."""
+    lines = text.split("\n", 2)
+    if len(lines) > 1 and lines[0] == "---" and (m := SURFACE_MARK.fullmatch(lines[1][2:])) and lines[1].startswith("# "):
+        return m.group(1)
+    m = re.fullmatch(r"<!-- (.+) -->", lines[0])
+    return (n.group(1) if m and (n := SURFACE_MARK.fullmatch(m.group(1))) else None)
+
+
+def _rule_description(meta: dict, body: str, stem: str) -> str:
+    heading = next((line[2:].strip() for line in body.split("\n") if line.startswith("# ")), None)
+    return str(meta.get("description") or heading or stem.replace("-", " "))
+
+
+def _tool_names(tools: object) -> list[str]:
+    names = tools if isinstance(tools, list) else str(tools or "").split(",")
+    return [str(n).strip() for n in names if str(n).strip()]
+
+
+def surface_files(repo: Path, kinds: list[str]) -> dict[str, str]:
+    """{path: text} of every copy the named assistants get from this repository's sources."""
+    return _surface_build(repo, kinds)[0]
+
+
+def _surface_build(repo: Path, kinds: list[str]) -> tuple[dict[str, str], dict[str, str]]:
+    """({path: text} of every copy, {source: why it could not be read}) — a source that does not parse is a
+    problem to fix, and its copies stay as they are."""
+    out: dict[str, str] = {}
+    broken: dict[str, str] = {}
+
+    def read(path: Path) -> tuple[str, dict, str] | None:
+        source = path.relative_to(repo).as_posix()
+        try:
+            meta, body = read_frontmatter(path.read_text(encoding="utf-8"), source)
+        except (FrontmatterError, UnicodeDecodeError) as error:
+            broken[source] = str(error)
+            return None
+        return source, meta, body
+
+    for path in sorted((repo / RULES_FROM).rglob("*.md")):
+        if (got := read(path)) is None:
+            continue
+        source, meta, body = got
+        stem = path.relative_to(repo / RULES_FROM).with_suffix("").as_posix()
+        paths = meta.get("paths")
+        globs = [paths] if isinstance(paths, str) else [str(p) for p in paths or []]
+        description = _yaml_str(_rule_description(meta, body, path.stem))
+        if "cursor" in kinds:  # globs unquoted, as Cursor's documentation and its users write them
+            globs_line = f"globs: {', '.join(globs)}\n" if globs else ""
+            out[f".cursor/rules/{stem}.mdc"] = (f"---\n# {_surface_mark(source)}\ndescription: {description}\n"
+                                                f"{globs_line}alwaysApply: {'false' if globs else 'true'}\n---\n{body}")
+        if "copilot" in kinds:
+            out[f".github/instructions/{stem}.instructions.md"] = (
+                f"---\n# {_surface_mark(source)}\ndescription: {description}\n"
+                f"applyTo: {_yaml_str(', '.join(globs) or '**')}\n---\n{body}")
+    for path in sorted((repo / AGENTS_FROM).glob("*.md")):
+        if (got := read(path)) is None:
+            continue
+        source, meta, body = got
+        name, tools = str(meta.get("name") or path.stem), _tool_names(meta.get("tools"))
+        head = f"---\n# {_surface_mark(source)}\nname: {_yaml_str(name)}\ndescription: {_yaml_str(str(meta.get('description', '')))}\n"
+        if "cursor" in kinds:  # Cursor limits a subagent only by `readonly`; a reader of the repository gets it
+            readonly = bool(tools) and not WRITING_TOOLS & set(tools)
+            out[f".cursor/agents/{path.stem}.md"] = f"{head}model: inherit\nreadonly: {'true' if readonly else 'false'}\n---\n{body}"
+        if "copilot" in kinds:
+            aliases = list(dict.fromkeys(COPILOT_TOOLS[t] for t in tools if t in COPILOT_TOOLS))
+            tools_line = f"tools: {_yaml_flow(aliases)}\n" if tools else ""
+            out[f".github/agents/{path.stem}.agent.md"] = f"{head}{tools_line}---\n{body}"
+    if "copilot" in kinds and (repo / "AGENTS.md").is_file():
+        out[COPILOT_POINTER] = (f"<!-- {_surface_mark('AGENTS.md')} -->\n# Instructions for GitHub Copilot\n\n"
+                                "This repository's instructions are in `AGENTS.md`, at its root and nearest to the file you work "
+                                "on: read them first. They hold its rules, its commands, its gate and where its knowledge lives.\n")
+    return out, broken
+
+
+def _surface_targets(repo: Path, kinds: list[str]) -> list[Path]:
+    """Every file in the folders the named assistants read that this command could have written."""
+    globs = {"cursor": [".cursor/rules/**/*.mdc", ".cursor/agents/*.md"],
+             "copilot": [".github/instructions/**/*.instructions.md", ".github/agents/*.agent.md", COPILOT_POINTER]}
+    return sorted({p for kind in kinds for g in globs.get(kind, []) for p in repo.glob(g) if p.is_file() and not p.is_symlink()})
+
+
+def hand_written_surfaces(repo: Path, kinds: list[str]) -> list[str]:
+    """The files in those folders that this command did not write: the repository's own, never touched."""
+    return [p.relative_to(repo).as_posix() for p in _surface_targets(repo, kinds)
+            if _generated_from(p.read_text(encoding="utf-8", errors="replace")) is None]
+
+
+def surface_problems(repo: Path, kinds: list[str]) -> list[str]:
+    """Each copy that is missing, stale or edited by hand, and each whose source is gone."""
+    expected, broken = _surface_build(repo, kinds)
+    problems = [f"{source}: does not parse ({why}); its copies are kept until it does" for source, why in broken.items()]
+    own = set(hand_written_surfaces(repo, kinds))
+    for rel, text in expected.items():
+        path = repo / rel
+        if rel in own:
+            if rel != COPILOT_POINTER:  # the pointer is only offered; a hand-written one stands
+                problems.append(f"{rel}: written by hand where a copy of {_generated_from(text)} belongs; compare the two, "
+                                "keep what the source lacks there, then `bundle.py surfaces --write --force`")
+        elif not path.is_file():
+            problems.append(f"{rel}: missing; run `bundle.py surfaces --write`")
+        elif path.is_symlink():
+            problems.append(f"{rel}: a link where a generated copy belongs; replace it with a file")
+        elif path.read_text(encoding="utf-8", errors="replace") != text:
+            problems.append(f"{rel}: not what {_generated_from(text)} produces (edited, or behind it); edit the source, "
+                            "then `bundle.py surfaces --write`")
+    for path in _surface_targets(repo, kinds):
+        rel = path.relative_to(repo).as_posix()
+        source = _generated_from(path.read_text(encoding="utf-8", errors="replace"))
+        if source and rel not in expected and source not in broken:
+            problems.append(f"{rel}: generated from {source}, whose source is gone; `bundle.py surfaces --write` removes it")
+    return problems
+
+
+def write_surfaces(repo: Path, kinds: list[str], *, force: bool = False) -> tuple[list[str], list[str]]:
+    """Writes every copy the named assistants get, and removes the generated ones whose source is gone.
+
+    A file the repository wrote at a copy's path is refused unless `force`; its rules belong in the source
+    first. Copilot's pointer is the exception: a hand-written one is left as it is.
+    """
+    expected, broken = _surface_build(repo, kinds)
+    if broken:
+        raise RefusedError("these sources do not parse, so nothing is written: "
+                           + "; ".join(f"{s} ({why})" for s, why in broken.items()))
+    root = repo.resolve()
+    links = sorted(rel for rel in expected if (repo / rel).is_symlink()
+                   or not (repo / rel).parent.resolve().is_relative_to(root))
+    if links:
+        raise RefusedError("a link where a generated copy belongs, never written through: " + ", ".join(links))
+    own = set(hand_written_surfaces(repo, kinds))
+    clash = sorted(rel for rel in expected if rel in own and rel != COPILOT_POINTER)
+    if clash and not force:
+        raise RefusedError("written by hand where a generated copy belongs: " + ", ".join(clash)
+                           + "; move what they hold into their sources, then run with --force")
+    written = []
+    for rel, text in expected.items():
+        path = repo / rel
+        if rel == COPILOT_POINTER and rel in own:
+            continue
+        if not path.is_file() or path.read_text(encoding="utf-8", errors="replace") != text:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            written.append(rel)
+    removed = []
+    for path in _surface_targets(repo, kinds):
+        rel = path.relative_to(repo).as_posix()
+        if rel not in expected and _generated_from(path.read_text(encoding="utf-8", errors="replace")):
+            path.unlink()
+            removed.append(rel)
+    return written, removed
+
+
+def carrier_surface_problems(repo: Path, kinds: object) -> list[str]:
+    """`surfaces` in carrier.toml: known assistants only, each one's copies current."""
+    if kinds is None:
+        return []
+    if not isinstance(kinds, list):
+        return [f"{CARRIER_FILE}: `surfaces` must be a list of assistants ({', '.join(SURFACE_KINDS)})"]
+    unknown = [k for k in kinds if k not in SURFACE_KINDS]
+    return [f"{CARRIER_FILE}: `surfaces` names `{k}`; known: {', '.join(SURFACE_KINDS)}" for k in unknown] \
+        + surface_problems(repo, [k for k in kinds if k in SURFACE_KINDS])
+
+
+ENTRY_HEADING = re.compile(r"^(#{2,3}) \d{4}-\d{2}-\d{2}\b")  # a log may keep its entries at level two or three
 FORMAT_HEADING = re.compile(r"^#{2,6} .*\bformat\b", re.IGNORECASE)
-CHANGELOG_ARTIFACT = "5. `.claude/logs/agent-changelog.md`"
+CHANGELOG_ARTIFACT = "5. The session log — `.claude/logs/agent-changelog.md` by default"  # its heading, exactly
 
 
 def _first_fence(text: str) -> str | None:
@@ -2847,14 +3947,38 @@ def _first_fence(text: str) -> str | None:
 
 
 def entry_template_text(log: str) -> str | None:
-    """The entry format a log states for itself: the first fenced block under a heading that names a format."""
+    """The entry format a log states for itself: the first fenced block under a heading that names a format,
+    or else the first fenced block holding at least two fields, whatever its heading is called (2026-10-07)."""
     lines = log.split("\n")
     prose = _prose(lines)
     at = next((i for i, line in enumerate(lines) if prose[i] and FORMAT_HEADING.match(line)), None)
-    return None if at is None else _first_fence("\n".join(lines[at + 1:]))
+    if at is not None:
+        return _first_fence("\n".join(lines[at + 1:]))
+    start = 0
+    while (block := _first_fence("\n".join(lines[start:]))) is not None:
+        if sum(bool(ENTRY_FIELD.match(line)) for line in block.split("\n")) >= 2:
+            return block
+        rest = lines[start:]
+        fences = [i for i, line in enumerate(rest) if line.startswith("```")]
+        if len(fences) < 2:
+            return None
+        start += fences[1] + 1
+    return None
 
 
-ENTRY_FIELD = re.compile(r"^\*\*(.+?)\*\*\s*(.*)$")
+def entry_level(log: str) -> int:
+    """The heading level a log's entries use: its newest entry's, else its format's, else two."""
+    lines = log.split("\n")
+    prose = _prose(lines)
+    for i, line in enumerate(lines):
+        if prose[i] and (m := ENTRY_HEADING.match(line)):
+            return len(m.group(1))
+    template = entry_template_text(log) or ""
+    heading = next((line for line in template.split("\n") if line.startswith("#")), "")
+    return len(heading) - len(heading.lstrip("#")) if heading.startswith(("## ", "### ")) else 2
+
+
+ENTRY_FIELD = re.compile(r"^(?:\s*[-*]\s+)?\*\*(.+?)\*\*\s*(.*)$")  # bold labels, bulleted or not
 FROM_METHOD = "from the method's entry format, which this log's lacks:"
 
 
@@ -2896,18 +4020,29 @@ def entry_template(log: Path, tree: Path = OWN_BUNDLE) -> str:
     return entry_format(log, tree)[0]
 
 
-def new_entry(title: str, carrier: str, today: str, template: str) -> str:
-    """An entry skeleton: the heading with its minted id, then each field of the template with its description
-    in a comment, which the writer replaces."""
+def new_entry(title: str, carrier: str, today: str, template: str, level: int = 2) -> str:
+    """An entry skeleton: the heading with its minted id at the log's own level, then each field of the template
+    with its description in a comment, which the writer replaces; bulleted when the template's fields are."""
+    bullet = "- " if any(re.match(r"^\s*[-*]\s+\*\*", line) for line in template.split("\n")) else ""
     fields: list[list[str]] = []
     for line in template.split("\n"):
         if m := ENTRY_FIELD.match(line):
             fields.append([m.group(1), m.group(2).strip()])
         elif fields and line.strip() and not line.startswith("#"):
             fields[-1][1] = (fields[-1][1] + " " + line.strip()).strip()
-    heading = f"## {today} · {record_id('s', title, carrier)} — {title}"
-    return heading + "\n\n" + "\n\n".join(f"**{label}** <!-- {text} -->" if text else f"**{label}**"
-                                          for label, text in fields) + "\n"
+    heading = f"{'#' * level} {today} · {record_id('s', title, carrier)} — {title}"
+    joiner = "\n" if bullet else "\n\n"
+    return heading + "\n\n" + joiner.join(f"{bullet}**{label}** <!-- {text} -->" if text else f"{bullet}**{label}**"
+                                           for label, text in fields) + "\n"
+
+
+def carrier_log(repo: Path) -> Path:
+    """A carrier's session log: the `log` its carrier file names, relative to the repository, or the default."""
+    try:
+        named = (read_carrier(repo / ".agents") or {}).get("log")
+    except RefusedError:
+        named = None
+    return repo / named if isinstance(named, str) and named.strip() else repo / ".claude/logs/agent-changelog.md"
 
 
 def insert_entry(log: str, entry: str) -> str:
@@ -3221,17 +4356,17 @@ def _parser() -> argparse.ArgumentParser:
         prog="bundle.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
-    for name, help_text in (("verify", "everything a carrier's gate fails on (exit 1)"),
-                            ("digest", "deprecated alias of verify, kept through 0.0.x for carriers' audits")):
-        p = sub.add_parser(name, help=help_text)
-        p.add_argument("tree", nargs="?", default=str(OWN_BUNDLE))
-        p.add_argument("--check", action="store_true", help=argparse.SUPPRESS)
-        p.add_argument("--release", action="store_true", help="the tree is a release as it arrives: no carrier file, no proposals")
+    p = sub.add_parser("verify", help="everything a carrier's gate fails on (exit 1)")
+    p.add_argument("tree", nargs="?", default=str(OWN_BUNDLE))
+    p.add_argument("--check", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--release", action="store_true", help="the tree is a release as it arrives: no carrier file, no proposals")
     p = sub.add_parser("check-local", help="the carrier changed only what it owns (exit 1)")
     p.add_argument("repos", nargs="*")
     p = sub.add_parser("carrier-id", help="a repository's stored random id; --mint writes one where there is none")
     p.add_argument("repo", nargs="?", default=str(OWN_REPO))
     p.add_argument("--mint", action="store_true", help=f"write a new random id into .agents/{CARRIER_FILE}; refused if one is stored")
+    p.add_argument("--upstream", help="with --mint: the id of the repository this one takes releases from "
+                                      "(default: the home the release's README names)")
     p = sub.add_parser("id", help="a record id: decision, roadmap item or session entry (d|i|s TEXT...)")
     p.add_argument("kind", choices=list(RECORD_KINDS))
     p.add_argument("parts", nargs="+", metavar="TEXT")
@@ -3239,6 +4374,12 @@ def _parser() -> argparse.ArgumentParser:
     p = sub.add_parser("ids", help="record ids in files: malformed or defined twice (exit 1), defined under another carrier's id (warned)")
     p.add_argument("files", nargs="+", metavar="FILE")
     p.add_argument("--carrier", metavar="REPO", help="the carrier whose prefix a definition should carry (default: this tool's repository, if it stores an id)")
+    p = sub.add_parser("decisions", help="a decisions log: status, supersession both ways, a person over an agent (exit 1); "
+                       "proposed rows, unconfirmed reasons and dead enforcers (warned)")
+    p.add_argument("files", nargs="+", metavar="FILE")
+    p.add_argument("--migrate", action="store_true", help="add the Status column to a four-column log, each row "
+                   "`accepted recorded <date>` from the commit that wrote it; prints what it would change")
+    p.add_argument("--write", action="store_true", help="with --migrate: write the files")
     p = sub.add_parser("privacy", help="nothing that identifies a private repository, its people or its infrastructure (exit 1 on a FAIL)")
     p.add_argument("tree", nargs="?", default=str(OWN_BUNDLE), help="the bundle whose files are read")
     p.add_argument("--paths", nargs="+", metavar="FILE", help="read these files instead of the tree, anywhere (a repository's README, a staged file)")
@@ -3290,18 +4431,44 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--bundle", default=str(OWN_BUNDLE))
     p.add_argument("--check", action="store_true", help="install nothing; fail (exit 1) when an installed skill is stale or edited")
     p.add_argument("--force", action="store_true", help="overwrite a SKILL.md the repository wrote, once its rules are in LOCAL.md")
+    p = sub.add_parser("surfaces", help="Cursor's and Copilot's copies of what Claude Code reads (rules, subagents, a pointer); "
+                                        "experimental; --write")
+    p.add_argument("--repo", default=str(OWN_REPO))
+    p.add_argument("--only", nargs="+", choices=SURFACE_KINDS, help="these assistants (default: the carrier file's `surfaces`)")
+    p.add_argument("--write", action="store_true", help="write the copies and remove those whose source is gone")
+    p.add_argument("--force", action="store_true", help="overwrite a file written by hand at a copy's path")
     p = sub.add_parser("new", help="a record skeleton with its minted id: `new entry TITLE...` for the changelog")
     p.add_argument("kind", choices=["entry"])
     p.add_argument("parts", nargs="+", metavar="TITLE")
     p.add_argument("--repo", default=str(OWN_REPO))
-    p.add_argument("--log", help="the changelog (default: REPO/.claude/logs/agent-changelog.md); its own format wins, "
+    p.add_argument("--log", help="the changelog (default: the carrier file's `log`, else REPO/.claude/logs/agent-changelog.md); its own format wins, "
                    "and the method's fields it lacks are appended, marked")
     p.add_argument("--bundle", default=str(OWN_BUNDLE), help="the bundle whose method's entry format is read")
     p.add_argument("--write", action="store_true", help="insert it above the newest entry instead of printing it")
     p.add_argument("--date", default="", help="YYYY-MM-DD (default: today)")
+    sub.add_parser("research-hook", help="the researcher agent's PreToolUse hook: one call on stdin; exit 2 refuses it")
+    p = sub.add_parser("lookup", help="the index's rows a change matches, from its words, files or diff; nothing when none")
+    p.add_argument("words", nargs="*", help="what the change does, in words")
+    p.add_argument("--files", nargs="*", type=Path, help="files the change will touch")
+    p.add_argument("--diff", nargs="?", const="", metavar="RANGE", help="the working diff, or `git diff RANGE`")
+    p.add_argument("--top", type=int, default=3)
+    p.add_argument("--cards", action="store_true", help="also print each card's Not when and Check")
+    p.add_argument("--bundle", default=str(OWN_BUNDLE))
+    p = sub.add_parser("close", help="the close's deterministic checks in one command: verify, trailers, ids, decisions, docs-drift, memory (exit 1 on any)")
+    p.add_argument("--repo", default=str(OWN_REPO))
+    p.add_argument("--base", help="the session's first commit's parent: trailers and docs-drift read BASE..HEAD")
+    p = sub.add_parser("docs-drift", help="documents left stale by a change, from the carrier's docs-map.toml (exit 1 on a blocking rule)")
+    mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--staged", action="store_true", help="warn on the staged changes (a pre-commit hook)")
+    mode.add_argument("--range", metavar="BASE..HEAD", help="fail a blocking rule unless a commit says docs-unchanged: <reason>")
+    mode.add_argument("--map", action="store_true", help="the map itself: documents exist, globs match, reasons given")
+    mode.add_argument("--refs", action="store_true", help="links and backticked paths in mapped documents exist")
+    mode.add_argument("--report", action="store_true", help="triggers, escapes and their rate, stale documents, suggested pairs")
+    p.add_argument("--since", default="7d", help="with --report: a window such as 7d")
+    p.add_argument("--repo", default=str(OWN_REPO))
     p = sub.add_parser("count", help="entries mentioning a symptom, not incidents; a line repeated word for word is flagged, never subtracted")
     p.add_argument("symptom")
-    p.add_argument("files", nargs="*", metavar="FILE", help="default: this repository's .claude/logs/agent-changelog.md")
+    p.add_argument("files", nargs="*", metavar="FILE", help="default: the carrier file's `log`, else this repository's .claude/logs/agent-changelog.md")
     p = sub.add_parser("memory-diff", help="each local assistant memory, and whether the repository holds what it names")
     p.add_argument("--repo", default=str(OWN_REPO))
     p.add_argument("--memory", help="the memory folder (default: the assistant's, for REPO)")
@@ -3333,6 +4500,28 @@ def _trailers_argv(argv: list[str]) -> list[str]:
     return ["trailers", *own, *(["--", *rest] if rest else [])]
 
 
+def research_hook(stdin: str) -> int:
+    """The researcher agent's hook: 0 lets a call run, 2 refuses it; anything unreadable is refused, since a hook
+    that fails with another code lets the call through."""
+    try:
+        payload = json.loads(stdin)
+        if payload.get("tool_name") != "Bash":
+            return 0
+        command = str((payload.get("tool_input") or {}).get("command", ""))
+        cwd = Path(payload.get("cwd") or ".")
+        try:
+            repo = Path(git(cwd, "rev-parse", "--show-toplevel").strip())
+        except (subprocess.CalledProcessError, OSError):
+            repo = cwd
+        if research_allowed(command, repo):
+            return 0
+        print("researcher: only reads, and `curl` into a temporary folder outside the repository, run here", file=sys.stderr)
+        return 2
+    except Exception as error:  # noqa: BLE001
+        print(f"researcher: refused, the hook could not read the call ({error})", file=sys.stderr)
+        return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(_trailers_argv(list(sys.argv[1:] if argv is None else argv)))
     try:
@@ -3343,9 +4532,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run(args: argparse.Namespace) -> int:  # noqa: C901, PLR0911, PLR0912 -- one branch per command
-    if args.command in ("verify", "digest"):
-        if args.command == "digest":
-            print("  . `digest` is deprecated: the bundle is verified by SHA256SUMS now; running `verify`")
+    if args.command == "research-hook":
+        return research_hook(sys.stdin.read())
+    if args.command == "verify":
         tree = Path(args.tree)
         privacy = privacy_check(tree) if not is_legacy(_a_bundle(tree)) else None
         problems = verify_problems(tree, privacy, release=args.release)
@@ -3362,7 +4551,7 @@ def _run(args: argparse.Namespace) -> int:  # noqa: C901, PLR0911, PLR0912 -- on
         repos = workspace(args.repos).repos if declared else [OWN_REPO]
         found = check_local_all(repos)
         for repo in repos:
-            for warning in user_deny_warnings(repo):
+            for warning in user_deny_warnings(repo) + attribution_warnings(repo):
                 print(f"  ! {repo.name}: {warning}")
         for name, problems in found:
             for problem in problems:
@@ -3372,7 +4561,7 @@ def _run(args: argparse.Namespace) -> int:  # noqa: C901, PLR0911, PLR0912 -- on
         return 1 if found else 0
     if args.command == "carrier-id":
         if args.mint:
-            print(f"minted {mint_carrier_id(Path(args.repo))} in {Path(args.repo) / '.agents' / CARRIER_FILE}; commit it")
+            print(f"minted {mint_carrier_id(Path(args.repo), upstream=args.upstream)} in {Path(args.repo) / '.agents' / CARRIER_FILE}; commit it")
         else:
             print(repo_carrier_id(Path(args.repo)))
         return 0
@@ -3391,6 +4580,33 @@ def _run(args: argparse.Namespace) -> int:  # noqa: C901, PLR0911, PLR0912 -- on
             print(line)
         print(f"{counts['ids']} record ids in {len(args.files)} files: {counts['definitions']} defined, {counts['citations']} cited, "
               f"{counts['legacy']} of the first scheme; {len(errors)} errors, {len(warnings)} warnings")
+        return 1 if errors else 0
+    if args.command == "decisions":
+        files = [Path(f) for f in args.files]
+        if args.write and not args.migrate:
+            raise RefusedError("decisions: --write writes a migration; give --migrate with it")
+        if args.migrate:
+            total = 0
+            for path in files:
+                text, migrated, left = migrate_decisions(path)
+                total += len(migrated)
+                for row_id, date in migrated:
+                    print(f"  . {path}: {row_id} accepted recorded {date}")
+                for table in left:
+                    print(f"  ! {path}: left as it is, another header than the log's own; map its rows by hand "
+                          f"(an open section's rows are proposed, with `decides:`): {table}")
+                if args.write and migrated:
+                    path.write_text(text, encoding="utf-8")
+            print(f"{total} rows {'gained' if args.write else 'would gain'} a Status"
+                  + ("" if args.write or not total else "; run again with --write") + ". Map supersessions and "
+                  "declined rows written in prose by reading them; when unsure, leave `accepted`")
+            return 0
+        errors, warnings, counts = decision_check(files)
+        for line in [f"  x {e}" for e in errors] + [f"  ! {w}" for w in warnings]:
+            print(line)
+        print(f"decisions in {len(files)} files: {counts['rows']} rows, {counts['proposed']} proposed, "
+              f"{counts['unconfirmed']} unconfirmed, {counts['debt']} known-debt rows; "
+              f"{len(errors)} errors, {len(warnings)} warnings")
         return 1 if errors else 0
     if args.command == "privacy":
         result = privacy_check(Path(args.tree), [Path(f) for f in args.paths] if args.paths else None,
@@ -3488,6 +4704,31 @@ def _run(args: argparse.Namespace) -> int:  # noqa: C901, PLR0911, PLR0912 -- on
             print("  x " + problem)
         print(f"{len(found)} proposals, {sum(p.id in heard for p in found)} already received (`--prune` removes them)")
         return 1 if problems else 0
+    if args.command == "surfaces":
+        repo = Path(args.repo)
+        named = args.only or (read_carrier(repo / ".agents") or {}).get("surfaces") or []
+        if not isinstance(named, list):
+            print(f"  x {CARRIER_FILE}: `surfaces` must be a list of assistants ({', '.join(SURFACE_KINDS)})")
+            return 1
+        kinds = [k for k in named if k in SURFACE_KINDS]
+        if not kinds:
+            print(f'no assistant named: list them in .agents/{CARRIER_FILE} (`surfaces = ["cursor", "copilot"]`) or give --only')
+            return 0
+        if args.write:
+            written, removed = write_surfaces(repo, kinds, force=args.force)
+            for rel in written:
+                print(f"  + {rel}")
+            for rel in removed:
+                print(f"  - {rel}")
+            print(f"surfaces ({', '.join(kinds)}): {len(written)} written, {len(removed)} removed")
+            return 0
+        problems = surface_problems(repo, kinds)
+        for problem in problems:
+            print("  x " + problem)
+        for rel in hand_written_surfaces(repo, kinds):
+            print(f"  . written by hand, left alone: {rel}")
+        print(f"surfaces ({', '.join(kinds)}): " + (f"{len(problems)} problems" if problems else "current"))
+        return 1 if problems else 0
     if args.command == "install-skills":
         repo, tree = Path(args.repo), Path(args.bundle)
         if args.check:
@@ -3501,10 +4742,11 @@ def _run(args: argparse.Namespace) -> int:  # noqa: C901, PLR0911, PLR0912 -- on
         return 0
     if args.command == "new":
         repo = Path(args.repo)
-        log = Path(args.log) if args.log else repo / ".claude/logs/agent-changelog.md"
+        log = Path(args.log) if args.log else carrier_log(repo)
         title = " ".join(args.parts)
         template, added = entry_format(log, Path(args.bundle))
-        entry = new_entry(title, repo_carrier_id(repo), args.date or datetime.date.today().isoformat(), template)
+        entry = new_entry(title, repo_carrier_id(repo), args.date or datetime.date.today().isoformat(), template,
+                          level=entry_level(log.read_text(encoding="utf-8")) if log.is_file() else 2)
         if not args.write:
             print(entry, end="")
         else:
@@ -3514,8 +4756,62 @@ def _run(args: argparse.Namespace) -> int:  # noqa: C901, PLR0911, PLR0912 -- on
             print(f"  . the method's entry format has fields this log's format lacks, appended and marked: {' '.join(f'**{label}**' for label in added)}; "
                   "add them to the log's format, or say there why it omits them")
         return 0
+    if args.command == "lookup":
+        tree = Path(args.bundle)
+        diff = None
+        if args.diff is not None:
+            diff = git(tree.parent, "diff", *([args.diff] if args.diff else []))
+        hits = lookup(tree, lookup_query(" ".join(args.words), args.files, diff), args.top)
+        for hit in hits:
+            print(f"- {hit.do} -> .agents/knowledge/{hit.card}")
+            print(f"  wrong when: {hit.wrong_when}")
+            if args.cards and (tree / "knowledge" / hit.card).is_file():
+                card = (tree / "knowledge" / hit.card).read_text(encoding="utf-8")
+                for key in ("Not when", "Check"):
+                    if m := re.search(rf"\*\*{key}\.\*\* (.+)", card):
+                        print(f"  {key.lower()}: {m.group(1)}")
+        print("Not matched, or not sure? Read .agents/knowledge/INDEX.md, *By what you are about to do*.")
+        return 0
+    if args.command == "close":
+        steps = close_report(Path(args.repo), args.base)
+        for step in steps:
+            print(f"  {'x' if step.failed else '.'} {step.name}")
+            for line in step.lines[:12]:
+                print(f"      {line}")
+        print("not run here, the writer's part: the changelog entry's words, frictions counted by symptom "
+              "(`bundle.py count`), local memory moved into the repository, the hand-off")
+        failed = [s.name for s in steps if s.failed]
+        print("close: " + (f"{len(failed)} checks failed ({', '.join(failed)})" if failed else "every check passed"))
+        return 1 if failed else 0
+    if args.command == "docs-drift":
+        repo = Path(args.repo)
+        if args.staged or args.range:
+            fails, warns = ([], docs_drift_staged(repo)) if args.staged else docs_drift_range(repo, args.range)
+            for d in fails:
+                print(f"  x {d.doc}: not changed, while {', '.join(d.changed[:3])}{' …' if len(d.changed) > 3 else ''} did")
+            for d in warns:
+                print(f"  ! {d.doc}: not changed, while {', '.join(d.changed[:3])}{' …' if len(d.changed) > 3 else ''} did")
+            if fails:
+                print("update each document, or say why it stays true in a commit of the range: `docs-unchanged: <reason>`")
+            print(f"docs-drift: {len(fails)} blocking, {len(warns)} warnings")
+            return 1 if fails else 0
+        if args.map or args.refs:
+            problems = docs_map_problems(repo) if args.map else docs_ref_problems(repo)
+            for problem in problems:
+                print("  x " + problem)
+            print(f"docs-drift: {len(problems)} problems")
+            return 1 if problems else 0
+        drift = docs_report(repo, args.since)
+        for doc, row in drift["rules"].items():
+            print(f"  {doc}: triggered {row['triggered']}, escaped {row['escapes']} ({row['escape_rate']:.0%})"
+                  + (f"; reasons: {'; '.join(row['reasons'])}" if row["reasons"] else ""))
+        for doc in drift["stale"]:
+            print(f"  ! {doc}: its watched paths changed after its own last commit")
+        for doc, other, n in drift["suggested"]:
+            print(f"  ? {doc} changed with {other} {n} times; a rule to add? (never added by this)")
+        return 0
     if args.command == "count":
-        files = [Path(f) for f in args.files] or [OWN_REPO / ".claude/logs/agent-changelog.md"]
+        files = [Path(f) for f in args.files] or [carrier_log(OWN_REPO)]
         hits, repeats = count_report(args.symptom, files)
         for hit in hits:
             print(f"  {'=' if hit in repeats else ' '} {hit.file}:{hit.line}  {hit.where}"
