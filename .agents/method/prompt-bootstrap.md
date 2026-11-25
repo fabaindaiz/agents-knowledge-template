@@ -524,9 +524,10 @@ the session.
 fact that is true or false, verified by a task; a task serving none is its own
 work item.
 
-**A large plan carries its estimate** (over a session, or about 1e5 tokens): the
-release it lands in and its time and token cost, with their basis, in its header
-or roadmap item; the close compares it with the outcome.
+**A plan carries its estimate**: the release it lands in, and per task its agent wall minutes, tokens and review
+rounds, in a table whose *actual* column is filled as each task lands, with the
+ratio the earlier plans measured; human work hours only when the user asks, with
+their conversion. The close compares the totals with the outcome.
 
 > **Example.** "Any variant on demand" looked ready: the limit is an interface
 > constant, not a platform one. But **no data definition declares more variants
@@ -629,9 +630,12 @@ about a hundred thousand tokens where counted; thin evidence: principle 19). Not
 commit.
 
 - **Fix the findings and nothing else**, then send only what changed for a
-  second review. **At most two re-reviews**: what is still open after them goes
-  to the user as a decision, not into a third round. The re-reviews belong to
-  a review asked for or accepted; none runs without one.
+  second review. **Re-review by severity**, which the reviewer assigns and the
+  author never lowers: *high*, data lost, security or a gate broken; *medium*, a
+  wrong result, lost rule or false claim someone would meet; *low*, wording or a
+  cosmetic edge. Rounds run while one finds medium or worse, stop when only low
+  remain (listed), and at five ask the user; a medium or high fix gets its own pass,
+  counted as a round. Re-reviews follow only a review asked for or accepted.
 - A finding you reject is reported with the evidence that rejects it.
 - Where no subagent can run (another assistant, a restricted session), do the
   same here, in order: the card, the evidence, the check; and say in the report
@@ -945,7 +949,7 @@ The short one. Run it before you report, every time.
 - [ ] Where the change touched state, a contract, data, security or
       verification, the cards the index links were applied before the design
       decision and their checks ran before claiming done; a review asked for
-      ran on the diff, with at most two re-reviews; and none asked for, a change
+      ran on the diff, re-reviewed by severity (at most five rounds); and none asked for, a change
       that deletes or rewrites stored data, moves money or touches
       authentication offered one in its report.
 - [ ] The closing review ran: what this change invalidated was re-run, the

@@ -9,6 +9,24 @@ that block yourself always works. Not sure which one fits? Ask what to do next, 
 **Cost** is what it takes from you (turns or minutes of your attention) · what it takes from the model (tokens, by
 order of magnitude). Both are estimates.
 
+## The development flow, in order
+
+One change goes through these steps in this order; a small one skips what it does not need, and says which. Each
+step's improvements live in its own skill or file, not in an orchestrating one (`d-5ed7e8-cbb288`). The tables below
+say what each one does when started.
+
+| Step | Start with | Takes | Hands on | Closes when |
+|---|---|---|---|---|
+| 1. Idea | a brainstorming skill, if installed | a request or a problem | a first design, or the reason to stop | the human chooses to write it down |
+| 2. Spec, for a change worth one | the template `method/templates/spec.md`, checked by `bundle.py spec` (with `--plan` at step 5), or the repository's format | the design | goal, requirements `REQ-n` each with a scenario and its decision, open questions | `bundle.py spec` passes: each requirement decided, with a scenario, none open |
+| 3. Decisions | `/decision-review` | the open decisions | each answered and recorded, the agent's own marked unconfirmed | the human confirmed the final list and no `proposed` row the plan needs is left |
+| 4. User flow, when a person goes through one: before 3, or during it, its handling choices going back to 3 | `/user-walk` | the flow | the ideal path and every setback, the kept ones as failing tests | each kept case has its test |
+| 5. Plan | a planning skill, or the template `method/templates/plan.md`, whose state `bundle.py plan page` shows | the decisions | tasks with their tests; what it needs from unmerged work, a missing row stopping the task; three to five risks for the review, each with its test; a priced spike first where an unknown moves tasks; for several tasks, criteria mapped both ways; estimates in wall minutes, tokens and rounds | each criterion maps to a task and each task to a criterion |
+| 6. The plan's fresh read | a fresh-context agent given the plan and the code | the plan | findings on order, gaps, collisions and estimates | each finding fixed or answered, before the first task |
+| 7. Execution | "test first" | one task at a time | a commit per task on the gate, its actual beside its estimate | each test's red named (§18 of `prompt-context.md`), and the gate green |
+| 8. Review, when asked or accepted | "review it in a fresh context" | each task's diff, then the whole branch | findings by severity, fixed, re-reviewed | a round finds only low findings, or five ran and the human decided |
+| 9. Close | `/close` | the session | every part of the request accounted for, the log entry, the hand-off, the push when asked | `bundle.py close` passes, the close's judgement steps are done, and the hand-off works from another machine |
+
 ## Decide and design
 
 | When | Say, or run | What happens | Cost |
@@ -26,6 +44,7 @@ order of magnitude). Both are estimates.
 | Writing any code | "test first" (principle 18, or a test-driven skill) | a test that fails before the code | none · part of the work |
 | A failure whose cause is unknown | "debug this systematically" (a debugging skill) | reproduce, isolate, then fix | a few turns · 1e4–1e5 |
 | A change to look over | "review this diff" | findings with evidence | minutes · 1e4–1e5 |
+| Documentation to improve or format | "improve these docs", or `/edit-docs` | level by level, audit to mechanics, each commit reviewable; `bundle.py docs lint` and `docs fingerprint` check it kept the meaning, and a fresh reader reads the diff | a few turns · 1e5 |
 | A branch at its end, or a risky change | "review it in a fresh context" | the `knowledge-reviewer` agent checks the diff against the knowledge cards and returns only findings | minutes to read it · 1e5 |
 | About to say it is done | "verify before you say done" | the checks run, and their output is shown | none · 1e3–1e4 |
 
@@ -50,7 +69,7 @@ order of magnitude). Both are estimates.
 **A host without skills** (an assistant that does not load them) runs any of the method's skills from its file:
 
 ~~~text
-Follow .agents/method/skills/<name>/SKILL.md for this request. (<name>: next, decision-review, user-walk, close)
+Follow .agents/method/skills/<name>/SKILL.md for this request. (<name>: next, decision-review, user-walk, edit-docs, close)
 ~~~
 
 ## Your own shortcuts

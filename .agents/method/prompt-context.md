@@ -874,6 +874,13 @@ its own that repeats and reports an interval — on a machine other sessions sha
 an absolute time measures the load. A test found red on the untouched base gets
 the strict expected-failure mark, not a sentence in the commit message.
 
+**Say which red each test showed**, in the report and in the review: a failing
+assertion; only a compile or import failure, which is weak, since the test never
+ran; none possible here (a device or a service absent), so the run is owed; passed
+on arrival, which makes it a *guard*, named so; or a mutation of the code standing
+in. A task whose tests are all weak is marked so, whatever its review says. The
+test runs in one command and its fix in the next, so the red is seen first.
+
 **Prevents:** a suite that certifies the implementation's bugs, and the specific
 agent failure of writing a green test around code it just wrote.
 
@@ -978,13 +985,15 @@ each file opens with the sentinel line the privacy check fails on anywhere else.
 **Usage data is local, per user and consented.** It lives outside every repository
 (`bundle.py usage show` says where) and nothing is stored without the user's
 consent: the default is nothing, and a missing consent means never asked. Only the
-tool writes it (`usage add`). It never leaves the machine, except a generalised
-figure the user approves at a harvest as Evidence under this rule; a preference
+tool writes it (`usage add`). It never leaves the machine, except a figure
+`usage measure` generalised and the user approved into one named record; a preference
 never leaves, even summarised. The close asks for consent (`usage needs-consent`).
 
-**A long background agent states its price first:** an estimate of time and tokens,
-and its model. When it returns, compare the actual, and with consent record both
-(`usage add agent_costs`).
+**A long background agent states its price first:** an estimate of wall time and
+tokens, and its model, corrected by the ratio the last recorded pairs showed. When
+it returns, write the actual beside it where the estimate was written, and with
+consent record both (`usage add agent_costs`). Several heavy gates run at once on
+one machine slow each other: price that contention, or run them in turn.
 
 **Privacy wins over record-keeping.** Where this rule meets "never lose
 information", this rule wins. Sensitive detail is generalised while the lesson
@@ -1029,12 +1038,23 @@ points at for the evidence.
 A change that reshapes something every module reads lists, before it starts,
 every live branch and file it will collide with and the order the merges must
 take; where the shape itself changes, the plan carries a step in which both
-shapes are valid, so one task does not turn the whole branch red. The plan's
-estimates are in hours with a measured cost per task, and the estimate is kept
-beside what was actually spent — an estimate nobody compares afterwards never
-calibrates, and estimating in *sessions* stops meaning anything once agents run
-in parallel. **Check:** the plan names the branches it collides with, or says
-there are none.
+shapes are valid, so one task does not turn the whole branch red. **A plan is
+estimated in what is later measured** (agent wall minutes, tokens, review rounds
+per task), the actual written beside each as it lands, and the plan shows the
+ratio earlier plans measured; human hours only when asked, with their
+conversion — plans priced in them landed twenty to forty times faster, and
+nothing calibrated; *sessions* are no unit once agents run in parallel. The
+plan also lists **what it needs from unmerged work**, where that lives and which
+tasks wait on it, and a need with no row stops the task to report; **the risks a
+review must probe**, three to five, each with the test that pins it, which become
+the review's brief; and where the answer to an unknown would move tasks, it
+**opens with a priced spike** on a branch never merged, whose committed note maps
+each answer to the tasks it moves. **A plan gets a fresh read before its first
+task**: an agent that did not write it reads it against the code, for
+order, gaps, collisions and estimates, and each finding is fixed or answered.
+**Check:** the plan names the branches it collides with, or says there are none,
+every landed task has its actual beside its estimate, and the plan's fresh read
+is recorded.
 
 **2. Settle the questions — an approval is not a confirmation.**
 Decisions the agent reasoned on its own stay marked unconfirmed until the human
@@ -1059,7 +1079,12 @@ version control ignores, a delegate created in one starts from the branch it was
 cut from and not the one being worked on, and checks run inside it walk paths
 that only exist there. A gate runs against the index or a clean copy, never
 against the dirty tree, and a merge is chained to the gate exactly as a commit
-is. Work that was never run in its real environment is marked unverified in the
+is — by a hook, since the sentence alone recurred four times in one carrier: git
+runs `pre-merge-commit` before a merge that commits, so a stub that runs the
+pre-commit hook (`exec "$(dirname "$0")/pre-commit"`) holds it. It does not hold a
+merge finished by hand after a conflict (that commit runs `pre-commit`), a
+fast-forward (no commit, no hook), or `--no-verify` (no hook at all); by hand,
+`merge --no-commit`, the gate, then the commit. Work that was never run in its real environment is marked unverified in the
 first line of the report and goes into a batch with a named owner, because it
 fails almost entirely on its first real run and always for the same handful of
 reasons. Two written rules of one repository can contradict each other and the
@@ -1072,9 +1097,12 @@ Defects whose evidence lies outside the piece under review are the hardest to
 find, so the final review of the whole branch is not skipped however many tasks
 were approved one by one. A reviewer who did not write the code is independent
 of the author's assumptions and poorer in context: say which context it is
-given. A cap on re-review rounds assumes the target is fixed — when the human
-revises the rule between rounds the cap restarts, because the rounds are the
-target moving and not the reviewer failing to converge. **Check:** the branch
+given. The cap on re-review rounds (five) assumes the target is fixed — when
+the human revises the rule between rounds the count restarts at one, because
+the rounds are the target moving and not the reviewer failing to converge.
+Rounds end by severity, not by count: one carrier's rounds three to five still
+found medium defects in three lanes of four (`prompt-bootstrap.md`, the review
+step). **Check:** the branch
 has one review that read it whole, and the report says what it was given.
 
 **Where it is already written:** principle 15 holds how to ask; principle 17 how
@@ -1606,7 +1634,7 @@ What it is, in two lines.
 **What it collides with.** The rule, by its id, and why the collision is real.
 **What is already in its favour.** The mechanisms that exist.
 **What must be decided first.** Questions, not tasks.
-**Estimate**, for a large item: the release it is cut into, and its cost in time and tokens, with what it rests on.
+**Estimate**: the release it is cut into, and its cost in agent wall minutes, tokens and review rounds, with what it rests on and the actual beside it once known.
 
 ## Closed by measurement
 Ideas retired by a number, with the number, so they stay retired.
@@ -2209,7 +2237,7 @@ open, a keep-awake held), or attend it.
   delegates cut while waiting and three background suites dead before finishing,
   then none across the two following sessions.
 - **Gates are serialised**, one per machine behind a lock (`flock`, `lockf`), or
-  each delegate stops at *staged, message saved* and the coordinator runs them one
+  each delegate stops at *staged, message saved* and the controller runs them one
   at a time: the gates, not the agents, compete for the machine.
 - **Every delegate brief carries four lines**, beside the standing rules it repeats: its scratch directory and its
   done-state; how to run the gate, and the lock; that its report is its final
@@ -2219,6 +2247,17 @@ open, a keep-awake held), or attend it.
   an `&&` chain returns the filter's status, so a red check lets the commit
   through. Where a gate is composed by hand, make it one script under
   `set -euo pipefail` so nobody composes it again.
+- **A red run is reported, never retried away**: a test that failed and then
+  passed on a rerun is a flaky test, a finding with both runs, not a pass; the
+  commit waits on the owner's word or a fix. Measured: a brief that named the case
+  did not stop one delegate from rerunning until green.
+- **Two roles, named in the plan, when work runs in lanes**: the *controller*
+  assigns tasks, dispatches the reviews, integrates onto the integration branch
+  and keeps the build the human tests; a *lane* owns a branch, a worktree and a
+  set of files, reports its base commit and its range, and never merges another
+  lane's dependency itself, since a merge made in two lanes is a conflict solved
+  twice. Heavy gates in several lanes on one machine slow each other more than
+  the split saves: serialise them, as above.
 - **A stalled delegate is not a failed task**: read its scratch directory and
   `git status`, then resume it by message. Check every report first-hand.
 

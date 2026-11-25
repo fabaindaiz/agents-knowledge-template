@@ -9,6 +9,100 @@ version it holds with `bundle.py changelog --since <its version>`.
 
 ## [Unreleased]
 
+## [0.0.36] - 2026-11-25
+
+**What a carrier runs at this update: `install-skills`, for the new `edit-docs` skill.** The method gains the
+development flow as one map, review by severity, estimates in measured units and templates for a spec, a plan and
+its page; the tools gain `spec`, `docs`, `plan page`, `machine` and `usage measure`; the carrying tools are fixed so a
+splice, an intake or an export never loses or doubles a carrier's record. A carrier that copied the old plan or close
+skill text by hand reads *Changed*. Still a patch: criteria 2 and 3 of the first minor are not met (2 was run on
+copies and its gaps recorded) and 1 is unproven; 5's adversarial review ran, and every finding that lost or doubled a
+record is fixed below.
+
+### Added
+
+- **The development flow, as one map** (`d-5ed7e8-cbb288`): `guide.md` lists idea, spec, decisions, user flow, plan,
+  the plan's fresh read, execution, review and close, each with what it takes, what it hands on and the check that
+  closes it. Each step's improvements stay inside its own skill; there is no orchestrating skill.
+- **What a plan carries, and its fresh read** (`d-5ed7e8-21f670`, from one carrier's practice): the needs on unmerged
+  work with a stop rule, the three to five risks a review must probe each with its test, a priced spike first where
+  an unknown would move tasks, and a fresh-context read of every plan against the code before its first task
+  (`prompt-context.md` §21.1).
+- **Which red each test showed** (§18): a failing assertion, a compile failure only (weak), none possible here
+  (owed), passed on arrival (a guard), or a mutation; a task with only weak reds is marked so.
+- **A merge held by a hook** (§21.3): the carrier adds a `pre-merge-commit` stub that runs its pre-commit hook (the bundle ships none), since the sentence
+  alone recurred; what it does not hold (a merge finished by hand, a fast-forward, `--no-verify`) is named.
+- **Delegates** (*Long runs and delegates*): a red run reported, never retried away, a flaky test a finding; the
+  controller and lane roles, and heavy gates serialised rather than split across lanes.
+- **The machine register** (`d-5ed7e8-5751b6`): `bundle.py machine --mint` gives a machine a random id kept outside
+  every repository; `machine --write --waits "…"` writes its row (its carriers by id and version, what waits there,
+  the date) in `meta/tracking/machines.md`, never a name or a path; `machine --check` fails on a name, a path, a bad
+  id or a carrier id beside a description, and `bundle.py close` runs it and says when this machine's row is behind. A
+  pipe in its text is escaped, a row that would fail is never written, and a relative `XDG_CONFIG_HOME` is ignored.
+- **A spec format, optional** (`d-5ed7e8-cb0531`): `method/templates/spec.md` holds a summary, a section for a
+  newcomer, goal, scope, requirements with frozen `REQ-n` ids in EARS form each naming the decision that set it and
+  a WHEN/THEN scenario, interfaces, quality attributes with numbers, constraints, open questions and the definition
+  of done; the decisions log keeps the why. `bundle.py spec FILE [--plan PLAN]` fails on a missing section, an id
+  given twice, a requirement with no *shall*, decision or scenario, a decision in no row, a broken link, an open
+  `[NEEDS CLARIFICATION: …]` (which blocks the plan), and with `--plan` a requirement no task cites; a vague quality
+  with no number is a warning.
+- **The `edit-docs` skill, and `bundle.py docs`** (`d-5ed7e8-3a85e8`): documentation is improved level by level
+  (inventory, a read-only audit, structure, style, copy, mechanics, verification, report), each level its own
+  commit; it never changes meaning, drops a constraint, adds a fact or edits a frozen text. `docs lint FILE...`
+  checks headings, links and anchors, alt text, link text and whitespace; `docs fingerprint OLD NEW` (or `--rev REV
+  FILE`) compares normative words, negations and quantifiers, numbers, code, links, headings and record ids before
+  and after, and warns on a large shrink. Standard library only; building or showing documentation may need more.
+  Install it with `bundle.py install-skills`.
+- **The plan page** (`d-5ed7e8-09facc`): `method/templates/plan.md` fixes a plan's sections (the question now, where
+  we are, device runs, milestones, running now, the owner's, the task tables with estimate and actual, the
+  calibration); `bundle.py plan page PLAN --out FILE` renders them on `method/templates/plan-page.html`, a layout
+  anonymised from one a carrier's agent wrote by hand, computes the totals done and left and their ratio, escapes
+  the text, and writes nothing while a section is missing or a placeholder left. The close and a pause republish it.
+- **A usage figure enters a record only through `usage measure`** (`d-5ed7e8-7b6df4`): it answers a named question
+  (`agent-cost-ratio`, `frictions-per-session`, `ablation-effect`) from this machine's records alone, already
+  generalised to one significant figure with counts as orders of magnitude, shows you the raw figure marked never to
+  be pasted, and waits on `usage measure ID into RECORD` (the line to enter, for that one record) or `ID withhold
+  RECORD` (a trace with no figure). A second record needs a new measurement; fewer than ten records measure
+  nothing, and the measurements follow the retention and `usage forget`.
+- **The close** (`skills/close`): execution rulings become decision rows or are reversed; copy an agent wrote that a
+  person sees stays proposed until the owner has seen it; merged worktrees and done workspaces offered for removal.
+
+### Changed
+
+- **A test's red is seen before its fix** (§18, `d-5ed7e8-a5356b`): the test runs in one command and its fix in the
+  next.
+
+- **A review's rounds end by severity, not by count** (`d-5ed7e8-6db1f7`): another round runs while the last found
+  anything of medium severity or worse, stops when only low findings remain (listed), and stops at five to ask you;
+  a fix of medium severity or worse gets its own pass. It replaces *at most two re-reviews*, which one carrier's
+  measured rounds showed would have shipped medium defects in three lanes of four (`prompt-bootstrap.md`,
+  `prompt-context.md` §21.4).
+- **A plan is estimated in what is later measured** (`d-5ed7e8-9dc00d`): per task, agent wall minutes, tokens and
+  review rounds, the actual written beside each as it lands, and the ratio the earlier plans measured shown with the
+  estimate; human work hours only when you ask, with their conversion. A background agent's price is corrected by
+  the last recorded pairs, and heavy gates run at once on one machine are priced for the contention or run in turn
+  (`prompt-context.md` §21.1 and the delegation paragraph, `prompt-bootstrap.md`, the close's *Measured*).
+
+### Fixed
+
+- **The carrying tools, from an adversarial review** (criterion 5 of the first minor, `d-5ed7e8-c11cbb`):
+  - `release.py splice --backup` refuses a backup folder that is the carrier or inside it (one at the carriers'
+    parent folder used to delete the carrier's `.agents/`), and never replaces an earlier backup: a second one goes
+    beside it, `NAME.2/`, named in the splice's report.
+  - A carrier on the layout before 0.0.22 keeps the `carrier.toml` it already has (its `log`, frontier and gaps
+    were overwritten), and the file is written before the shipped ones, so an interruption leaves no own field only
+    in the backup.
+  - `release.py intake` holds a marker while it writes: a run over the records an interrupted one half wrote, or
+    two at once, is refused, so no proposal is taken in twice; one refused before it writes leaves no marker.
+  - `bundle.py export --replace` removes old names before copying, so a file renamed only in case survives on a
+    filesystem blind to case.
+  - A carrier file's frontier reads as TOML, whatever its quotes.
+  - `release.py note-state` undoes the move and the rewritten links when the build refuses it.
+- **The 0.0.36 tools, at the owner's pre-cut walk**: `docs fingerprint` reports a changed step order as a warning,
+  never a failure (`d-5ed7e8-a63064`); `plan page` refuses a bare *none* in *Needs, risks and the fresh read*
+  (`d-5ed7e8-d0d593`); `docs lint` reads setext headings; `spec` checks a link's `#anchor`; `machine` refuses a lone
+  `[carrier]` table in the manifest; `usage forget CATEGORY` says how many measures it dropped.
+
 ## [0.0.35] - 2026-11-25
 
 **What a carrier runs at this update: nothing to do, and three habits change.** A close pushes in a command of its

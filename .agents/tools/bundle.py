@@ -33,8 +33,16 @@ own tool, never by this one.
     python3 .agents/tools/bundle.py changelog --since X.Y.Z     what changed after the version this carrier holds
     python3 .agents/tools/bundle.py home [TREE]                 the home this release came from, its parent tag, this
                                                                 carrier's lineage, proposals and incoming waiting
-    python3 .agents/tools/bundle.py usage show|set|add|use|forget|brief|summary|report|needs-consent
-                                                                consented usage data, local only; `show` says where
+    python3 .agents/tools/bundle.py usage show|set|add|use|forget|brief|summary|report|needs-consent|measure
+                                                                consented usage data, local only; `show` says where;
+                                                                `measure` a generalised figure the owner enters, or not
+    python3 .agents/tools/bundle.py spec FILE [--decisions LOG] [--plan PLAN]   a spec's requirements: each decided,
+                                                                with a scenario, nothing open; --plan: each one cited
+    python3 .agents/tools/bundle.py docs fingerprint OLD NEW | --rev REV FILE   what carries meaning, kept by an edit
+    python3 .agents/tools/bundle.py docs lint FILE...           headings, links, anchors and mechanics of Markdown
+    python3 .agents/tools/bundle.py plan page FILE [--out HTML] [--lang L]   a plan's state rendered as a page
+    python3 .agents/tools/bundle.py machine [--mint | --write --waits W | --check]   this machine's random id and
+                                                                its row in the machine register
     python3 .agents/tools/bundle.py export [--replace] DEST   the shipped files and SHA256SUMS: a release as it travels
     python3 .agents/tools/bundle.py propose --kind K --target SLUG (--from FILE | --claim C --evidence E) [...]
                                                                 one proposal to the bundle, in proposals/
@@ -77,6 +85,7 @@ import collections
 import datetime
 import functools
 import hashlib
+import html
 import io
 import json
 import math
@@ -102,7 +111,8 @@ HERE = Path(__file__).resolve().parent
 OWN_BUNDLE = HERE.parent
 OWN_REPO = OWN_BUNDLE.parent
 
-MANIFEST = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "agent-guides/carriers.toml"
+MANIFEST = (Path(os.environ["XDG_CONFIG_HOME"]) if Path(os.environ.get("XDG_CONFIG_HOME") or ".").is_absolute()
+            else Path.home() / ".config") / "agent-guides/carriers.toml"
 
 WORKSPACE_ENV = "AGENT_WORKSPACE"
 
@@ -399,7 +409,7 @@ PLACEHOLDER = re.compile(r"<[A-Za-z][\w .-]*>|\bexample\.(?:com|org|net)\b|\b(?:
 
 def default_terms_path() -> Path:
     """The local private terms file: one term per line, case-insensitive, never committed anywhere."""
-    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "agent-guides/private-terms.txt"
+    return _config_dir() / "private-terms.txt"
 
 
 def read_terms(path: Path) -> list[str]:
@@ -3245,9 +3255,6 @@ def export(tree: Path, dest: Path, replace: bool = False) -> list[str]:
     elif dest.exists() and any(dest.iterdir()):
         raise RefusedError(f"{dest}: not empty; export into a new folder (or --replace over an older release)")
     rels = [*shipped(tree), CHECKSUMS]
-    for rel in rels:
-        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(tree / rel, dest / rel)
     for rel in sorted(old - set(rels)):
         if _replace_own(rel):
             continue
@@ -3256,6 +3263,9 @@ def export(tree: Path, dest: Path, replace: bool = False) -> list[str]:
         while parent != dest and parent.is_dir() and not any(parent.iterdir()):
             parent.rmdir()
             parent = parent.parent
+    for rel in rels:
+        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(tree / rel, dest / rel)
     if replace:
         record_lineage(dest)
     return rels
@@ -3707,6 +3717,621 @@ def lookup_query(text: str = "", files: list[Path] | None = None, diff: str | No
 
 
 
+DOCS_CAPS = re.compile(r"\b(?:MUST NOT|SHALL NOT|SHOULD NOT|NOT RECOMMENDED|MUST|SHALL|SHOULD|MAY|REQUIRED|RECOMMENDED|OPTIONAL)\b")
+DOCS_LOWER = re.compile(r"\b(?:must|shall|should|may)\b")
+DOCS_LOGIC = re.compile(r"\b(?:not|never|only|all|any|except|unless|at least|at most|before|after|no|none|every|each)\b", re.I)
+DOCS_NUMBER = re.compile(r"(?<![\w.])\d+(?:[.,:]\d+)*(?:\s?(?:%|[A-Za-zµ]+\b))?")
+DOCS_LINK = re.compile(r"(!?)\[([^\]]*)\]\(\s*<?([^()\s<>]+)>?(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)")
+DOCS_HEADING = re.compile(r"^(#{1,6})(?:[ \t]+(.*?))?[ \t]*#*[ \t]*$")
+DOCS_VAGUE_LINK = {"click here", "here", "this", "this document", "this link", "link", "this page", "read more", "more"}
+
+
+def _docs_parts(text: str) -> tuple[list[str], list[str], list[str]]:
+    """(prose lines with inline code removed, fenced blocks, inline code spans)."""
+    lines = text.split("\n")
+    prose_mask, prose, fences, current = _prose(lines), [], [], None
+    for line, is_prose in zip(lines, prose_mask):
+        if is_prose:
+            if current is not None:
+                fences.append("\n".join(current[1:]))
+                current = None
+            prose.append(line)
+        else:
+            current = (current or []) + [line]
+            prose.append("")
+    if current is not None:
+        fences.append("\n".join(current[1:]))
+    spans = [m.group(0).strip("`").strip() for line in prose for m in INLINE_CODE.finditer(line)]
+    return [INLINE_CODE.sub(" ", line) for line in prose], fences, spans
+
+
+def _docs_front_matter(lines: list[str]) -> int:
+    """How many leading lines are YAML front matter (0 when none)."""
+    if lines and lines[0].strip() == "---":
+        end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() in ("---", "...")), None)
+        return end + 1 if end else 0
+    return 0
+
+
+def docs_fingerprint(text: str) -> dict[str, Counter]:
+    prose, fences, spans = _docs_parts(text)
+    lines = [re.sub(r"<!--.*?-->", " ", line) for line in prose]
+    words = re.sub(r"\b(\w+)n't\b", r"\1 not", re.sub(r"\bcannot\b", "can not", "\n".join(lines), flags=re.I), flags=re.I)
+    flat = re.sub(r"\s+", " ", words)
+    placed = [f"{word} in sentence {i}" for i, s in enumerate(re.split(r"(?<=[.!?])\s+|\n\s*\n", words), 1)
+              for word in DOCS_CAPS.findall(s)]
+    chains, current, prev = [], [], ""
+    for line in lines:
+        m = re.match(r"^(\s*)(\d+)[.)]\s+(.*)", line)
+        if m and not m.group(1):
+            if m.group(2) == "1" and current and prev != "1":
+                chains.append(current)
+                current = []
+            current.append(" ".join(re.findall(r"\w+", m.group(3).lower())[:3]))
+            prev = m.group(2)
+        elif line.strip() and not line.startswith((" ", "\t")):
+            if current:
+                chains.append(current)
+            current, prev = [], ""
+    if current:
+        chains.append(current)
+    links = [m.group(3) for line in prose for m in DOCS_LINK.finditer(line)]
+    links += [m.group(1) for line in prose for m in re.finditer(r"^\s*\[[^\]]+\]:\s*<?(\S+?)>?(?:\s|$)", line)]
+    links += [m.group(1) for line in prose for m in re.finditer(r"<([a-z][a-z0-9+.-]*://[^>\s]+)>", line)]
+    return {
+        "normative words in capitals": Counter(DOCS_CAPS.findall(words)),
+        "which sentence holds each normative word in capitals": Counter(placed),
+        DOCS_ORDER: Counter(" → ".join(chain) for chain in chains),
+        "normative words in lower case": Counter(DOCS_LOWER.findall(words)),
+        "negations and quantifiers": Counter(m.lower() for m in DOCS_LOGIC.findall(words)),
+        "numbers": Counter(DOCS_NUMBER.findall(DOCS_LINK.sub(lambda m: m.group(2), flat))),
+        "code blocks": Counter(hashlib.sha256(f.encode()).hexdigest()[:10] + " " + (f.strip().split("\n")[0][:40]) for f in fences),
+        "inline code": Counter(spans),
+        "links": Counter(links),
+        "headings": Counter((m.group(1) + " " + (m.group(2) or "")) for line in prose if (m := DOCS_HEADING.match(line))),
+        "record ids": Counter(RECORD_ID.findall(text)),
+    }
+
+
+DOCS_ORDER = "the order of numbered steps"
+
+
+def docs_compare(old: str, new: str) -> tuple[list[str], list[str]]:
+    """(differences that carry meaning, warnings)."""
+    before, after = docs_fingerprint(old), docs_fingerprint(new)
+    problems, warnings = [], []
+    for key in before:
+        lost, gained = before[key] - after[key], after[key] - before[key]
+        if lost or gained:
+            show = lambda c: ", ".join(f"{k!r}" + (f" ×{n}" if n > 1 else "") for k, n in sorted(c.items()))
+            (warnings if key == DOCS_ORDER else problems).append(f"{key}{' may have changed, read the diff' if key == DOCS_ORDER else ''}: " + "; ".join(part for part in (f"lost {show(lost)}" if lost else "",
+                                                                      f"gained {show(gained)}" if gained else "") if part))
+    if old.strip() and len(new.strip()) < 0.8 * len(old.strip()):
+        warnings.append(f"the new text is {100 - round(100 * len(new.strip()) / len(old.strip()))}% shorter: read the diff "
+                        "for a dropped constraint, caveat or example")
+    return problems, warnings
+
+
+def _docs_slug(heading: str) -> str:
+    """The anchor a forge gives a heading: lower case, punctuation dropped, spaces to hyphens."""
+    text = re.sub(r"[`*~]", "", INLINE_CODE.sub(lambda m: m.group(0).strip("`"), heading)).strip().lower()
+    return re.sub(r"\s", "-", re.sub(r"[^\w\s-]", "", text))
+
+
+def _docs_setext(lines: list[str], mask: list[bool]) -> list[str]:
+    """The lines with each setext heading (a paragraph line underlined by === or ---) written as `#`/`##`, the
+    underline blanked, so every rule reads one heading form; line numbers are kept."""
+    out = list(lines)
+    for i in range(len(out) - 1):
+        under = re.fullmatch(r" {0,3}(=+|-+)\s*", out[i + 1])
+        if (under and mask[i] and mask[i + 1] and out[i].strip() and (i == 0 or not out[i - 1].strip())
+                and not re.match(r"\s*(?:#|[-*+>|<]|\d+[.)]\s)| {4}|\t", out[i])):
+            out[i] = ("# " if under.group(1)[0] == "=" else "## ") + out[i].strip()
+            out[i + 1] = ""
+    return out
+
+
+def _docs_anchors(path: Path) -> set[str]:
+    lines = path.read_text(encoding="utf-8").split("\n") if path.is_file() else []
+    start = _docs_front_matter(lines)
+    seen: Counter = Counter()
+    anchors = set()
+    mask = _prose(lines[start:])
+    for line, is_prose in zip(_docs_setext(lines[start:], mask), mask):
+        if not is_prose:
+            continue
+        line = re.sub(r"<!--.*?-->", "", line)
+        if (m := DOCS_HEADING.match(line)) and m.group(2):
+            slug = _docs_slug(m.group(2))
+            anchors.add(slug if not seen[slug] else f"{slug}-{seen[slug]}")
+            seen[slug] += 1
+    return anchors
+
+
+def docs_lint(path: Path) -> tuple[list[str], list[str]]:
+    """(problems, warnings) of the mechanical rules over one Markdown file."""
+    text = path.read_text(encoding="utf-8")
+    lines = text.split("\n")
+    start = _docs_front_matter(lines)
+    mask = [False] * start + _prose(lines[start:])
+    lines = _docs_setext(lines, mask)
+    problems, warnings, level, h1, texts = [], [], 0, 0, {}
+    for n, (line, is_prose) in enumerate(zip(lines, mask), 1):
+        where = f"{path.name}:{n}"
+        if n <= start:
+            continue
+        if FENCE.match(line) and not is_prose and (n == start + 1 or mask[n - 2]):
+            if not line.strip().lstrip("`~").strip():
+                warnings.append(f"{where}: a fenced block with no language")
+        if not is_prose:
+            continue
+        if line != line.rstrip() and not re.search(r"\S  $", line):
+            warnings.append(f"{where}: trailing whitespace")
+        bare = re.sub(r"<!--.*?-->", "", INLINE_CODE.sub(" ", line))
+        if m := DOCS_HEADING.match(re.sub(r"<!--.*?-->", "", line)):
+            depth, title = len(m.group(1)), (m.group(2) or "").strip()
+            if not title:
+                problems.append(f"{where}: an empty heading")
+            elif title[-1] in ".:;!,":
+                problems.append(f"{where}: a heading ends in punctuation ({title[-1]})")
+            if depth == 1:
+                h1 += 1
+                if h1 == 2:
+                    problems.append(f"{where}: more than one level-1 heading")
+            elif level and depth > level + 1:
+                problems.append(f"{where}: the heading skips from level {level} to {depth}")
+            level = depth
+        plain = re.sub(r"<!--.*?-->", "", line)
+        code = [s.span() for s in INLINE_CODE.finditer(plain)]
+        for m in DOCS_LINK.finditer(plain):
+            if any(a <= m.start() < b for a, b in code):
+                continue
+            image, label, target = m.group(1), m.group(2).strip(), m.group(3)
+            if image and not label:
+                problems.append(f"{where}: an image with no alt text ({target})")
+            if not image:
+                if label.lower() in DOCS_VAGUE_LINK or re.match(r"^https?://", label):
+                    problems.append(f"{where}: the link text {label!r} says nothing of where it goes")
+                if texts.setdefault(label.lower(), target) != target:
+                    warnings.append(f"{where}: the same text {label!r} links to two targets; a reader cannot tell them apart")
+            file, _, anchor = target.partition("#")
+            if re.match(r"^[a-z][a-z0-9+.-]*:", file):
+                continue
+            dest = (path.parent / file) if file else path
+            if file and not dest.exists():
+                problems.append(f"{where}: the link to {file} resolves to nothing")
+            elif anchor and dest.suffix == ".md" and anchor not in _docs_anchors(dest):
+                problems.append(f"{where}: #{anchor} is no heading of {dest.name}")
+        for m in re.finditer(r"(?<![(<\[\"'=])\bhttps?://[^\s)>\]\"']+", DOCS_LINK.sub(" ", bare)):
+            warnings.append(f"{where}: a bare URL ({m.group(0)}); give it link text")
+        if re.search(r"\b(?:etc\.|and so on)", bare):
+            warnings.append(f"{where}: a list that ends in 'etc.' or 'and so on' says less than it seems")
+    if text and not text.endswith("\n"):
+        problems.append(f"{path.name}: no newline at the end")
+    return problems, warnings
+
+
+
+PLAN_SECTIONS = ("The question now", "Where we are", "Device runs", "Milestones", "Running now", "The owner's",
+                 "Needs, risks and the fresh read", "Tasks")
+PLAN_PLACEHOLDER = re.compile(r"YYYY-MM-DD|<[a-z][^<>\n]* [^<>\n]*>")
+PLAN_STATES = {"done": "done", "approved": "done", "merged": "done", "landed": "done", "passed": "done",
+               "running": "run", "active": "run", "in review": "run", "in progress": "run", "reviewing": "run",
+               "review": "run", "now": "run", "in your": "done",
+               "blocked": "bad", "failed": "bad", "broken": "bad", "red": "bad"}
+
+
+def _plan_state(text: str) -> str:
+    """The class of a state cell, read from its first words only: the template's states and their synonyms."""
+    words = re.findall(r"[a-z]+", text.lower())
+    return PLAN_STATES.get(" ".join(words[:2]), PLAN_STATES.get(words[0] if words else "", "wait"))
+
+
+def _plan_inline(text: str) -> str:
+    """Escaped text with `code` and **bold**; bold may span code, never reaches inside it."""
+    codes: list[str] = []
+
+    def hold(m: re.Match) -> str:
+        codes.append(f"<code>{html.escape(m.group(1), quote=False)}</code>")
+        return f"\x00{len(codes) - 1}\x00"
+    out = html.escape(re.sub(r"`([^`]+)`", hold, text.replace("\x00", "")), quote=False)
+    out = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", out)
+    return re.sub(r"\x00(\d+)\x00", lambda m: codes[int(m.group(1))], out)
+
+
+def _plan_num(cell: str) -> float | None:
+    m = re.fullmatch(r"~?\s*(\d+(?:[.,]\d+)?)\s*\w*", cell.strip())
+    return float(m.group(1).replace(",", ".")) if m else None
+
+
+def _plan_fmt(value: float) -> str:
+    return str(int(value)) if value == int(value) else f"{value:.1f}"
+
+
+def _plan_blocks(lines: list[str]) -> list[tuple[str, list[str]]]:
+    """('p'|'ul'|'ol'|'table'|'h3', lines) runs of a section's body."""
+    blocks: list[tuple[str, list[str]]] = []
+    for line in lines:
+        kind = ("" if not line.strip() else "h3" if line.startswith("### ") else "table" if line.lstrip().startswith("|")
+                else "ul" if re.match(r"^\s*[-*] ", line) else "ol" if re.match(r"^\s*\d+\. ", line) else "p")
+        if not kind:
+            blocks.append(("", []))
+        elif blocks and blocks[-1][0] == kind and kind != "h3":
+            blocks[-1][1].append(line)
+        else:
+            blocks.append((kind, [line]))
+    return [b for b in blocks if b[0]]
+
+
+def _plan_items(lines: list[str]) -> list[str]:
+    return [re.sub(r"^\s*(?:[-*]|\d+\.)\s+", "", line) for line in lines]
+
+
+def _plan_table(lines: list[str], tasks: bool = False) -> tuple[str, list[str]]:
+    rows = [split_row(line) for line in lines if not set(line.strip()) <= set("|-: ")]
+    if not rows:
+        return "", []
+    head, body = rows[0], rows[1:]
+    col = {name.split(" (")[0].rstrip(".").lower(): i for i, name in enumerate(head)}
+    numeric = {i for i, name in enumerate(head) if name.lower().startswith(("est", "actual", "hours", "min", "rounds"))}
+    cells = []
+    for row in body:
+        tds = []
+        for i, cell in enumerate(row):
+            if (tasks and i == col.get("state")) or (not tasks and i == col.get("result") and re.fullmatch(r"\d+/\d+", cell)):
+                cls = (_plan_state(cell) if tasks else "done" if cell.split("/")[0] == cell.split("/")[1] else "bad")
+                tds.append(f'<td><span class="st {cls}">{_plan_inline(cell)}</span></td>')
+            else:
+                tds.append(f'<td class="n">{_plan_inline(cell)}</td>' if i in numeric else f"<td>{_plan_inline(cell)}</td>")
+        cells.append("<tr>" + "".join(tds) + "</tr>")
+    notes = []
+    if tasks and "state" in col and (est := next((i for i, h in enumerate(head) if h.lower().startswith("est")), None)) is not None:
+        act = next((i for i, h in enumerate(head) if h.lower().startswith("actual")), None)
+        unit = (re.search(r"\(([^)]+)\)", head[est]) or [None, ""])[1]
+        done = [r for r in body if len(r) > est and _plan_state(r[col["state"]]) == "done"]
+        left = [r for r in body if len(r) > est and _plan_state(r[col["state"]]) != "done"]
+        d_est = sum(_plan_num(r[est]) or 0 for r in done)
+        pairs = [(_plan_num(r[est]), _plan_num(r[act])) for r in done if act is not None and len(r) > act]
+        pairs = [(e, a) for e, a in pairs if e and a is not None]
+        d_act = sum(_plan_num(r[act]) or 0 for r in done if act is not None and len(r) > act)
+        ratio = f" (×{_sig1(d_act / sum(e for e, _ in pairs))})" if pairs and d_act else ""
+        tasks_word = lambda n: f"{n} task" + ("" if n == 1 else "s")
+        notes.append(f"done: {tasks_word(len(done))}, {_plan_fmt(d_est)} {unit} estimated, {_plan_fmt(d_act)} {unit} actual{ratio}".replace("  ", " "))
+        notes.append(f"left: {tasks_word(len(left))}, {_plan_fmt(sum(_plan_num(r[est]) or 0 for r in left))} {unit} estimated".replace("  ", " "))
+    table = ('<div class="tbl"><table><thead><tr>' + "".join(f"<th>{_plan_inline(h)}</th>" for h in head)
+             + "</tr></thead><tbody>" + "".join(cells) + "</tbody></table></div>")
+    return table, notes
+
+
+def _plan_section(name: str, heading: str, lines: list[str]) -> str:
+    parts, lane_open = [], False
+    for kind, block in _plan_blocks(lines):
+        if kind == "table":
+            table, notes = _plan_table(block, tasks=name == "Tasks")
+            parts.append(table)
+            parts += [f'<p class="note">{_plan_inline(n)}</p>' for n in notes]
+        elif kind == "h3":
+            if lane_open:
+                parts.append("</div>")
+            parts.append(f'<div class="lane"><span class="st lane-name">{_plan_inline(block[0][4:])}</span>')
+            lane_open = True
+        elif kind in ("ul", "ol") and name == "Milestones":
+            for item in _plan_items(block):
+                m = re.match(r"\*\*(.+?)\*\*\s*·\s*(.+?)\s*·\s*(.+?)\s*(?:—\s*(.*))?$", item)
+                if not m:
+                    parts.append(f"<p>{_plan_inline(item)}</p>")
+                    continue
+                cls = _plan_state(m.group(3))
+                parts.append(f'<div class="card"><span class="tag {cls}">{_plan_inline(m.group(1))}</span><div class="body">'
+                             f'<h3>{_plan_inline(m.group(2))} <span class="st {cls}">{_plan_inline(m.group(3))}</span></h3>'
+                             + (f"<p>{_plan_inline(m.group(4))}</p>" if m.group(4) else "") + "</div></div>")
+        elif kind in ("ul", "ol") and name == "Running now":
+            for item in _plan_items(block):
+                if item.startswith("→"):
+                    parts.append(f'<span class="ms">{_plan_inline(item)}</span>')
+                else:
+                    task, _, state = item.rpartition(" · ")
+                    parts.append(f'<div class="step"><span>{_plan_inline(task or state)}</span>'
+                                 + (f'<span class="m">{_plan_inline(state)}</span>' if task else "") + "</div>")
+        elif kind in ("ul", "ol") and name == "The owner's":
+            items = []
+            for item in _plan_items(block):
+                m = re.match(r"\[([^\]]+)\]\s*(.*)$", item)
+                items.append(f'<li><span class="st you">{_plan_inline(m.group(1))}</span> {_plan_inline(m.group(2))}</li>' if m
+                             else f"<li>{_plan_inline(item)}</li>")
+            parts.append("<ul>" + "".join(items) + "</ul>")
+        elif kind in ("ul", "ol"):
+            parts.append(f"<{kind}>" + "".join(f"<li>{_plan_inline(i)}</li>" for i in _plan_items(block)) + f"</{kind}>")
+        else:
+            text = " ".join(line.strip() for line in block)
+            note = re.match(r"^(?:Note|Calibration):\s*", text)
+            parts.append(f'<p class="note">{_plan_inline(text[note.end():] if note and note.group(0).startswith("Note") else text)}</p>'
+                         if note else f"<p>{_plan_inline(text)}</p>")
+    inner = "".join(parts) + ("</div>" if lane_open else "")
+    if name == "Running now":
+        inner = '<div class="lanes">' + inner + "</div>"
+    elif name == "Milestones":
+        inner = f'<div class="cards">{inner}</div>'
+    elif name in ("The question now", "Where we are"):
+        inner = f'<div class="box{" hero" if name == "The question now" else ""}">{inner}</div>'
+    return f"  <section>\n    <h2>{_plan_inline(heading)}</h2>\n    {inner}\n  </section>\n"
+
+
+def plan_page(plan: Path, template: Path | None = None, lang: str = "en") -> tuple[str | None, list[str]]:
+    """(the page, problems): the page is None while any problem stands."""
+    text = re.sub(r"<!--.*?-->", lambda m: "\n" * m.group(0).count("\n"), plan.read_text(encoding="utf-8"), flags=re.S)
+    lines = text.split("\n")
+    title = next((line[2:].strip() for line in lines if line.startswith("# ")), "")
+    first = next((i for i, line in enumerate(lines) if line.startswith("## ")), len(lines))
+    lead = " ".join(line.strip() for line in lines[:first] if line.strip() and not line.startswith("# "))
+    sections, current = [], None
+    for line in lines[first:]:
+        if line.startswith("## "):
+            current = (line[3:].strip(), [])
+            sections.append(current)
+        elif current is not None:
+            current[1].append(line)
+    problems = [] if title else ["no `# ` title line"]
+    names = [next((s for s in PLAN_SECTIONS if h == s or (s == "Tasks" and h.startswith("Tasks"))), None) for h, _ in sections]
+    problems += [f"no `## {s}` section" for s in PLAN_SECTIONS if s not in names]
+    problems += [f"`## {h}` is no section of the template ({', '.join(PLAN_SECTIONS)}); its text would be lost"
+                 for (h, _), n in zip(sections, names) if n is None]
+    order = [PLAN_SECTIONS.index(n) for n in names if n]
+    if order != sorted(order):
+        problems.append("the sections are out of the template's order: " + ", ".join(PLAN_SECTIONS))
+    for heading, body in sections:
+        if heading == "Needs, risks and the fresh read":
+            problems += [f"`## {heading}`: {line.strip()!r} is a bare none; say why there is none"
+                         for line in body if re.fullmatch(r"\s*[-*]?\s*(?:\*\*[^*]+\*\*:?|[^:*`_]+:)?\s*[_*`]*none[_*`]*\s*[.;!]?\s*", line, re.I)]
+    problems += [f"line {n}: {m.group(0)!r} is a template placeholder still to fill (wrap real angle brackets in backticks)"
+                 for n, line in enumerate(lines, 1) for m in [PLAN_PLACEHOLDER.search(INLINE_CODE.sub("", line))] if m]
+    if problems:
+        return None, problems
+    shell = (template or Path(__file__).resolve().parent.parent / "method/templates/plan-page.html").read_text(encoding="utf-8")
+    shell = re.sub(r"<!-- [^\n]*Generated by the release build[^\n]*-->\n", "", shell, count=1)
+    body = "".join(_plan_section(name, heading, body) for (heading, body), name in zip(sections, names) if name)
+    values = {"lang": html.escape(lang), "title": re.sub(r"</?(?:b|code)>", "", _plan_inline(title)),
+              "lead": _plan_inline(lead), "body": body}
+    return re.sub(r"\{\{(lang|title|lead|body)\}\}", lambda m: values[m.group(1)], shell), []
+
+
+
+SPEC_SECTIONS = ("Summary", "For a newcomer", "Goal and users", "Scope and non-goals", "Requirements", "Interfaces",
+                 "Quality attributes", "Constraints", "Open questions", "Definition of done")
+SPEC_REQ = re.compile(r"^### (REQ-\d+)\b(.*)$")
+SPEC_REQ_ID = re.compile(r"\bREQ-\d+\b(?!\.\d)")
+SPEC_OPEN = re.compile(r"\[NEEDS CLARIFICATION:[^\]]*\]")
+SPEC_VAGUE = re.compile(r"\b(fast|quick|slow|scalable|secure|intuitive|robust|simple|easy|efficient|user-friendly)\b", re.I)
+SPEC_DECISION_ROW = re.compile(r"^\|\s*`?([dis]-[0-9a-f]{6}-[0-9a-f]{6})`?\s*\|\s*([^|]*)\|")
+SPEC_WITHDRAWN = re.compile(r"·\s*Withdrawn\s*$", re.I)
+
+
+def _spec_text(text: str) -> list[tuple[int, str]]:
+    """(line number, text) of the prose lines, HTML comments and fenced blocks blanked."""
+    text = re.sub(r"<!--.*?-->", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.S)
+    lines = text.split("\n")
+    return [(n, line if prose else "") for n, (line, prose) in enumerate(zip(lines, _prose(lines)), 1)]
+
+
+def spec_check(spec: Path, decisions: Path | None = None, plan: Path | None = None) -> tuple[list[str], list[str], int]:
+    """(problems, warnings, requirements read) for a spec in shape B."""
+    for path in (spec, plan):
+        if path is not None and not path.is_file():
+            raise RefusedError(f"{path}: no such file")
+    lines = _spec_text(spec.read_text(encoding="utf-8"))
+    decisions = decisions or spec.parent / "decisions.md"
+    known = ({m.group(1): m.group(2).strip(" *_`").lower() for line in decisions.read_text(encoding="utf-8").splitlines()
+              if (m := SPEC_DECISION_ROW.match(line))} if decisions.is_file() else {})
+    problems, warnings = [], []
+    if not decisions.is_file():
+        problems.append(f"{decisions}: no decisions log beside the spec (`--decisions`)")
+    elif not known:
+        problems.append(f"{decisions.name}: no decision ids read (each row's first cell an id, its second the status)")
+    headings = [line[3:].strip() for _, line in lines if line.startswith("## ")]
+    problems += [f"no `## {s}` section" + (" (the template has each)" if not i else "")
+                 for i, s in enumerate(s for s in SPEC_SECTIONS if s not in headings)]
+    section, reqs, current = "", {}, None
+    for n, line in lines:
+        if line.startswith("## "):
+            section, current = line[3:].strip(), None
+            continue
+        if m := SPEC_OPEN.search(line):
+            problems.append(f"{spec.name}:{n}: {m.group(0)} is open, and an open marker blocks the plan")
+        for target in LINK.findall(INLINE_CODE.sub("", line)):
+            path = target.split("#")[0]
+            if path.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", path):
+                problems.append(f"{spec.name}:{n}: the link to {path} is absolute; a link is relative to the spec")
+            elif path and not re.match(r"^[a-z][a-z0-9+.-]*:", path) and not (spec.parent / path).exists():
+                problems.append(f"{spec.name}:{n}: the link to {path} resolves to nothing")
+            elif "#" in target and not re.match(r"^[a-z][a-z0-9+.-]*:", path):
+                dest, anchor = (spec.parent / path) if path else spec, target.split("#", 1)[1]
+                if dest.suffix == ".md" and anchor and anchor not in _docs_anchors(dest):
+                    problems.append(f"{spec.name}:{n}: #{anchor} is no heading of {dest.name}")
+        if section == "Requirements" and (m := SPEC_REQ.match(line)):
+            if m.group(1) in reqs:
+                problems.append(f"{spec.name}:{n}: {m.group(1)} twice; an id once given is frozen")
+            current = reqs.setdefault(m.group(1), {"line": n, "withdrawn": bool(SPEC_WITHDRAWN.search(m.group(2))),
+                                                    "shall": False, "decided": [], "scenario": False})
+        elif current is not None:
+            if not re.match(r"^\s*(?:[-*] Scenario:|Decided in:)", line):
+                current["shall"] |= bool(re.search(r"\bshall\b", line, re.I))
+            if line.lstrip().startswith("Decided in:"):
+                current["decided"] += RECORD_ID.findall(line)
+            current["scenario"] |= bool(re.match(r"^\s*[-*] Scenario:.*\bWHEN\b.*\bTHEN\b", line))
+        if section == "Quality attributes" and (m := SPEC_VAGUE.search(line)) and not re.search(r"\d", line):
+            warnings.append(f"{spec.name}:{n}: {m.group(0)!r} with no number cannot be checked")
+    for rid, r in reqs.items():
+        if r["withdrawn"]:
+            continue
+        where = f"{spec.name}:{r['line']}: {rid}"
+        if not r["shall"]:
+            problems.append(f"{where}: no shall; write it in EARS form")
+        if not r["decided"]:
+            problems.append(f"{where}: no decision (`Decided in: d-...`)")
+        problems += [f"{where}: {d} is in no row of {decisions.name}" for d in r["decided"] if known and d not in known]
+        problems += [f"{where}: {d} is {known[d] or 'of no status'}, not accepted" for d in r["decided"]
+                     if d in known and not known[d].startswith("accepted")]
+        if not r["scenario"]:
+            problems.append(f"{where}: no scenario (`- Scenario: WHEN ... THEN ...`)")
+    if not reqs:
+        problems.append("no requirement (`### REQ-1 · <title>` under `## Requirements`)")
+    if plan is not None:
+        cited = set(SPEC_REQ_ID.findall(plan.read_text(encoding="utf-8")))
+        live = {rid for rid, r in reqs.items() if not r["withdrawn"]}
+        problems += [f"{rid}: no task of {plan.name} cites it" for rid in sorted(live - cited)]
+        problems += [f"{plan.name} cites {rid}, which the spec does not hold" for rid in sorted(cited - set(reqs))]
+        warnings += [f"{plan.name} cites {rid}, which is withdrawn" for rid in sorted(cited & (set(reqs) - live))]
+    return problems, warnings, len(reqs)
+
+
+
+MACHINE_REGISTER = "meta/tracking/machines.md"
+MACHINE_HEADER = "| Machine | Carriers | Waits here | Updated |"
+MACHINE_ID = re.compile(r"^m-[0-9a-f]{6}$")
+MACHINE_CARRIER = re.compile(r"^r-[0-9a-f]{6} (?:\d+\.\d+\.\d+|unreleased)$")
+MACHINE_PATH = re.compile(r"(?<![\w.~/-])(?:~/|\$\{?HOME\}?/|%\w+%|\\\\\w|file://|/[\w.-]+/|\.\./|\./[\w.-]+/|[A-Za-z]:[\\/])")
+
+
+def _config_dir() -> Path:
+    """This machine's agent-guides configuration folder, read at each call (tests point it elsewhere)."""
+    given = os.environ.get("XDG_CONFIG_HOME", "")
+    return (Path(given) if given and Path(given).is_absolute() else Path.home() / ".config") / "agent-guides"
+
+
+def machine_id() -> str | None:
+    path = _config_dir() / "machine.toml"
+    if not path.is_file():
+        return None
+    try:
+        value = tomllib.loads(path.read_text(encoding="utf-8")).get("machine", "")
+    except tomllib.TOMLDecodeError as error:
+        raise RefusedError(f"{path}: not readable TOML ({error}); fix or remove it by hand") from error
+    if not (isinstance(value, str) and MACHINE_ID.match(value)):
+        raise RefusedError(f"{path}: holds no machine id; fix or remove it by hand, never overwritten")
+    return value
+
+
+def mint_machine_id() -> str:
+    if machine_id():
+        raise RefusedError(f"this machine already has an id, {machine_id()}; an id once minted is frozen")
+    minted = "m-" + secrets.token_hex(3)
+    folder = _config_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        out = (folder / "machine.toml").open("x", encoding="utf-8")
+    except FileExistsError as error:
+        raise RefusedError("another run minted this machine's id meanwhile; `machine` shows it") from error
+    with out:
+        out.write(
+        "# This machine's random id for the machine register. Never committed; never beside a name.\n"
+        f'machine = "{minted}"\n')
+    return minted
+
+
+def machine_carriers() -> str:
+    """This machine's carriers as `r-xxxxxx X.Y.Z`, sorted, from the local manifest; names and paths dropped."""
+    path = _config_dir() / "carriers.toml"
+    try:
+        records = tomllib.loads(path.read_text(encoding="utf-8")).get("carrier", []) if path.is_file() else []
+    except tomllib.TOMLDecodeError as error:
+        raise RefusedError(f"{path}: not readable TOML ({error})") from error
+    if not isinstance(records, list):
+        raise RefusedError(f"{path}: `[carrier]` is one table; each carrier is a `[[carrier]]` record, as `release.py register` writes")
+    return ", ".join(sorted(f"{r['carrier']} {r.get('version') or 'unreleased'}" for r in records
+                            if isinstance(r, dict) and r.get("carrier")))
+
+
+def _machine_rows(text: str) -> list[tuple[int, list[str]]]:
+    return [(n, split_row(line)) for n, line in enumerate(text.splitlines(), 1)
+            if line.startswith("|") and split_row(line)[:1] != ["Machine"] and not set(line) <= set("|-: ")]
+
+
+def machine_problems(path: Path) -> list[str]:
+    """Each row: a machine id, carriers by id and version only, waits that name no carrier and no path, a date."""
+    return _machine_text_problems(path.read_text(encoding="utf-8"), path.name)
+
+
+def _machine_text_problems(text: str, name: str) -> list[str]:
+    problems, seen = [], set()
+    for n, cells in _machine_rows(text):
+        where = f"{name}:{n}"
+        if len(cells) != 4:
+            problems.append(f"{where}: {len(cells)} cells, not 4 ({MACHINE_HEADER})")
+            continue
+        machine, carriers, waits, updated = cells
+        if not MACHINE_ID.match(machine):
+            problems.append(f"{where}: {machine!r} is no machine id (m- and six hex digits, from `machine --mint`)")
+        elif machine in seen:
+            problems.append(f"{where}: machine id {machine} listed twice")
+        seen.add(machine)
+        bad = [c for c in (carriers.split(", ") if carriers else []) if not MACHINE_CARRIER.match(c)]
+        if bad:
+            problems.append(f"{where}: carriers must be `r-xxxxxx X.Y.Z` only, not {bad[0]!r}")
+        if re.search(r"\br-[0-9a-f]{6}\b", waits):
+            problems.append(f"{where}: a carrier id in *Waits here*, beside a description of it; say it without the id")
+        if MACHINE_PATH.search(re.sub(r"\b(?!file:)[a-z][a-z0-9+.-]*://\S*", " ", waits)):
+            problems.append(f"{where}: a path in *Waits here*; paths never travel")
+        try:
+            datetime.date.fromisoformat(updated)
+        except ValueError:
+            problems.append(f"{where}: {updated!r} is no date (YYYY-MM-DD)")
+    return problems
+
+
+def machine_write(path: Path, waits: str | None, today: str | None = None) -> str:
+    """Writes or replaces this machine's row; `waits` None keeps the row's last words."""
+    own = machine_id()
+    if not own:
+        raise RefusedError("this machine has no id: run `bundle.py machine --mint` once")
+    text = path.read_text(encoding="utf-8") if path.is_file() else (
+        "# Machines\n\nWritten by `bundle.py machine --write`, one row per machine, by random id only: which carriers "
+        "it holds and at which version, and what waits there. Which id is which machine lives only on that machine.\n\n"
+        f"{MACHINE_HEADER}\n|---|---|---|---|\n")
+    lines = text.splitlines()
+    old = next((i for i, line in enumerate(lines) if line.startswith("|") and split_row(line)[:1] == [own]), None)
+    if waits is None:
+        cells = split_row(lines[old]) if old is not None else []
+        waits = cells[2].replace("|", "\\|") if len(cells) > 2 else "nothing"
+    elif "\n" in waits or "\r" in waits:
+        raise RefusedError("--waits: one line")
+    else:
+        waits = waits.replace("|", "\\|")
+    row = f"| {own} | {machine_carriers()} | {waits.strip() or 'nothing'} | {today or datetime.date.today().isoformat()} |"
+    if old is not None:
+        lines[old] = row
+    else:
+        lines.append(row)
+    new = "\n".join(lines) + "\n"
+    problems = _machine_text_problems(new, path.name)
+    if problems:
+        raise RefusedError("not written, the row would fail the register's check: " + "; ".join(problems))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(new, encoding="utf-8")
+    return row
+
+
+def machine_step(repo: Path) -> "CloseStep":
+    path = repo / MACHINE_REGISTER
+    if not path.is_file():
+        return CloseStep("machines", False, (f"no {MACHINE_REGISTER}",))
+    problems = machine_problems(path)
+    if problems:
+        return CloseStep("machines", True, tuple(problems))
+    try:
+        own = machine_id()
+        carriers = machine_carriers()
+    except RefusedError as error:
+        return CloseStep("machines", True, (str(error),))
+    row = next((cells for _, cells in _machine_rows(path.read_text(encoding="utf-8")) if cells[:1] == [own]), None) if own else None
+    if not own:
+        return CloseStep("machines", False, ("this machine has no id: `machine --mint`, then `machine --write`",))
+    if row is None or row[1] != carriers:
+        return CloseStep("machines", False, ("this machine's row is missing or behind its manifest: run `bundle.py machine "
+                                             "--write --waits \"<what waits here>\"`",))
+    return CloseStep("machines", False, (f"this machine's row is current ({own}); waits: {row[2]}",))
+
+
+
 @dataclass(frozen=True)
 class CloseStep:
     name: str
@@ -3741,6 +4366,7 @@ def close_report(repo: Path, base: str | None = None) -> list[CloseStep]:
     lone = [m for m in memory_report(memory, repo.resolve()) if m.searched and not m.found_in and not m.partly] \
         if memory.is_dir() else []
     steps.append(CloseStep("memory", False, tuple(f"only on this machine: {m.name}" for m in lone) or ("nothing only on this machine",)))
+    steps.append(machine_step(repo))
     return steps
 
 
@@ -4493,7 +5119,7 @@ USAGE_CATEGORIES = {
     "ablation": "preferences on or off per session, to test whether they help",
 }
 USAGE_LEVELS = {"none": (), "counts": ("agent_costs", "frictions"), "full": tuple(USAGE_CATEGORIES)}
-USAGE_ACTIONS = ("show", "set", "add", "use", "forget", "brief", "summary", "report", "needs-consent")
+USAGE_ACTIONS = ("show", "set", "add", "use", "forget", "brief", "summary", "report", "measure", "needs-consent")
 USAGE_RETENTION, USAGE_SOON, USAGE_BRIEF_BYTES, USAGE_MIN_SESSIONS, USAGE_TEXT_MAX = 90, 7, 2048, 20, 300
 USAGE_TOKEN_RISE = 1 + 10 / 100
 USAGE_RULES = {"tok": r"[\w.:+-]{1,60}", "num": r"\d+(?:\.\d+)?", "int": r"\d+", "text": rf"[^\n]{{3,{USAGE_TEXT_MAX}}}",
@@ -4757,10 +5383,22 @@ def usage_use(repo, pref_id, today):
 
 def usage_forget(repo, category):
     paths = [_usage_file(repo, c) for c in ([_usage_category(category)] if category else USAGE_CATEGORIES)]
-    gone = [p for p in paths + ([] if category else [usage_consent_path()]) if p.is_file()]
+    measures = usage_state_dir(repo) / "measures.jsonl"
+    if category and measures.is_file():
+        path, rows = _measures(repo, datetime.date.today())
+        kept = [r for r in rows if USAGE_QUESTIONS.get(r.get("question"), ("",))[0] != category]
+        if len(kept) != len(rows):
+            _usage_write(path, _usage_header("measures") + "".join(json.dumps(r, sort_keys=True) + "\n" for r in kept))
+            dropped = len(rows) - len(kept)
+            said = [f"dropped {dropped} measure{'s' if dropped > 1 else ''} of {category} from {path}"]
+        else:
+            said = []
+    else:
+        said = []
+    gone = [p for p in paths + ([] if category else [usage_consent_path(), usage_state_dir(repo) / "measures.jsonl"]) if p.is_file()]
     for path in gone:
         path.unlink()
-    return [f"deleted {p}" for p in gone] or ["nothing to delete"]
+    return said + [f"deleted {p}" for p in gone] or ["nothing to delete"]
 
 
 def usage_show(repo, today):
@@ -4836,6 +5474,134 @@ def usage_report(repo, today):
             "preferences never used since stored (candidates to stop storing): " + (", ".join(unused) or "none")]
 
 
+
+def _sig1(value):
+    """One significant figure: what a record may carry of a ratio."""
+    rounded = float(f"{value:.1g}")
+    if not rounded:
+        return "0"
+    digits = -int(math.floor(math.log10(abs(rounded))))
+    return f"{rounded:.{max(digits, 0)}f}"
+
+
+def _order(n):
+    return "fewer than ten" if n < 10 else "tens" if n < 100 else "hundreds" if n < 1000 else "thousands"
+
+
+def _measure_costs(records):
+    time = [r["act_s"] / 60 / r["est_min"] for r in records if r.get("est_min")]
+    tokens = [r["act_ktok"] / r["est_ktok"] for r in records if r.get("est_ktok")]
+    if not time and not tokens:
+        return None
+    counted = {"time": len(time), "tokens": len(tokens)}
+    time, tokens = (v if len(v) >= MEASURE_MIN else [] for v in (time, tokens))
+    if not time and not tokens:
+        return "too few"
+
+    def general(values, what):
+        if values:
+            return f"{what} ×{_sig1(statistics.median(values))} (×{_sig1(min(values))} to ×{_sig1(max(values))})"
+        return f"{what} too few to generalise" if counted[what] else f"{what} not estimated"
+    def raw(values, what):
+        return f"{what} median {statistics.median(values):.2f}, range {min(values):.2f} to {max(values):.2f}, n={len(values)}" if values else f"{what} none"
+    n = max(len(time), len(tokens))
+    return (f"actual over estimate, {general(time, 'time')}, {general(tokens, 'tokens')}, over {_order(n)} delegations",
+            f"{raw(time, 'time')}; {raw(tokens, 'tokens')}")
+
+
+def _measure_frictions(records):
+    if not records:
+        return None
+    if len(records) < MEASURE_MIN:
+        return "too few"
+    means = {k: sum(r.get(k, 0) for r in records) / len(records) for k in _usage_counts()}
+    return (", ".join(f"{k} about {_sig1(v)} per session" for k, v in means.items()) + f", over {_order(len(records))} sessions",
+            ", ".join(f"{k} {v:.2f}" for k, v in means.items()) + f", n={len(records)}")
+
+
+def _measure_ablation(records):
+    arms = {a: [r for r in records if r["arm"] == a] for a in ("on", "off")}
+    if not all(arms.values()):
+        return None
+    if min(len(a) for a in arms.values()) < MEASURE_MIN:
+        return "too few"
+    mean = {a: sum(r["repeats"] for r in rs) / len(rs) for a, rs in arms.items()}
+    ratio = mean["on"] / mean["off"] if mean["off"] else None
+    general = (f"repeats with preferences on at ×{_sig1(ratio)} the rate with them off" if ratio is not None else
+               "no repeats with preferences off" + ("; some with them on" if mean["on"] else ""))
+    return (general + f", over {_order(len(arms['on']))} sessions on and {_order(len(arms['off']))} off",
+            f"mean repeats on {mean['on']:.2f} (n={len(arms['on'])}), off {mean['off']:.2f} (n={len(arms['off'])})")
+
+
+USAGE_QUESTIONS = {
+    "agent-cost-ratio": ("agent_costs", "how far delegated work's actual time and tokens run from their estimate", _measure_costs),
+    "frictions-per-session": ("frictions", "how often each friction happens in a session", _measure_frictions),
+    "ablation-effect": ("ablation", "whether stored preferences change how often an instruction is repeated", _measure_ablation),
+}
+MEASURE_ID = re.compile(r"^u-[0-9a-f]{6}$")
+MEASURE_MIN = 10
+
+
+def _measures(repo, today):
+    """(file, rows within the retention), the ones past it deleted as the file is read."""
+    path = usage_state_dir(repo) / "measures.jsonl"
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines() if path.is_file() else []:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and MEASURE_ID.match(str(row.get("id", ""))) and isinstance(row.get("at"), str):
+            rows.append(row)
+    cutoff = str(today - datetime.timedelta(days=usage_days(usage_consent())))
+    kept = [r for r in rows if r["at"] >= cutoff or r.get("state") == "entered"]
+    if len(kept) != len(rows):
+        _usage_write(path, _usage_header("measures") + "".join(json.dumps(r, sort_keys=True) + "\n" for r in kept))
+    return path, kept
+
+
+def usage_measure(repo, rest, today):
+    """`measure` lists the questions; `measure Q` answers one; `measure ID into|withhold RECORD` settles it."""
+    if not rest:
+        return [f"  {name}: {what} (from {category})" for name, (category, what, _) in USAGE_QUESTIONS.items()]
+    path, rows = _measures(repo, today)
+    if MEASURE_ID.match(rest[0]):
+        if len(rest) != 3 or rest[1] not in ("into", "withhold"):
+            raise RefusedError("usage measure ID into RECORD, or ID withhold RECORD")
+        ident, verb, record = rest
+        row = next((r for r in rows if r["id"] == ident), None)
+        if row is None:
+            raise RefusedError(f"{ident}: no measurement with that id on this machine")
+        if row.get("state") != "pending":
+            raise RefusedError(f"{ident} is already {row.get('state')} for {row.get('record')}; an approval is for that record only, "
+                               "so measure again for another")
+        row.update(state="entered" if verb == "into" else "withheld", record=record, settled=str(today))
+        _usage_write(path, _usage_header("measures") + "".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+        if verb == "into":
+            return [f"Measured on one machine on {row['at']} (`usage measure {row['question']}`), entered in {record} with the "
+                    f"owner's approval: {row['generalised']}."]
+        return [f"A measurement of `{row['question']}` ran on one machine on {row['at']}; the owner withheld it from {record}."]
+    if rest[0] not in USAGE_QUESTIONS or len(rest) != 1:
+        raise RefusedError(f"usage measure: one of {', '.join(USAGE_QUESTIONS)}, or ID into|withhold RECORD")
+    category, what, answer = USAGE_QUESTIONS[rest[0]]
+    if not usage_effective(usage_consent()).get(category):
+        return [f"nothing to measure: {category} is not recorded on this machine (`usage set`)"]
+    found = answer(usage_records(repo, category, today))
+    if found is None:
+        return [f"nothing to measure: no {category} records within the retention"]
+    if found == "too few":
+        return [f"nothing to measure: too few {category} records (fewer than {MEASURE_MIN}) to generalise without "
+                "showing the raw figure"]
+    generalised, raw = found
+    taken = {r["id"] for r in rows}
+    ident = next(i for i in iter(lambda: "u-" + secrets.token_hex(3), None) if i not in taken)
+    rows.append({"id": ident, "question": rest[0], "at": str(today), "generalised": generalised, "state": "pending", "record": ""})
+    _usage_write(path, _usage_header("measures") + "".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+    return [f"question: {what}", f"generalised: {generalised}",
+            f"raw, for you only, never into a record: {raw}",
+            f"ask the owner, naming the one record: `usage measure {ident} into RECORD`, or `usage measure {ident} withhold RECORD`"]
+
+
 def usage_needs_consent(repo, consent, today):
     """`ask`, or `ok:` and the categories on; also lets expired records go."""
     for category in USAGE_CATEGORIES:
@@ -4854,8 +5620,9 @@ def usage_command(repo, action, rest, as_json=None, memory=None, today=None):
            [usage_add(repo, rest[0], json.loads(as_json) if as_json else dict(i.partition("=")[::2] for i in rest[1:]), today)],
            "use": lambda: [usage_use(repo, rest[0], today)], "forget": lambda: usage_forget(repo, rest[0] if rest else None),
            "show": lambda: usage_show(repo, today), "brief": lambda: usage_brief(repo, today, memory),
-           "summary": lambda: usage_summary(repo, today), "report": lambda: usage_report(repo, today)}
-    if len(rest) > (1 if action == "forget" else 0) and action not in ("set", "add", "use"):
+           "summary": lambda: usage_summary(repo, today), "report": lambda: usage_report(repo, today),
+           "measure": lambda: usage_measure(repo, rest, today)}
+    if len(rest) > (1 if action == "forget" else 0) and action not in ("set", "add", "use", "measure"):
         raise RefusedError(f"usage {action}: unexpected arguments")
     try:
         return ops[action]()
@@ -4920,7 +5687,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("tree", nargs="?", default=str(OWN_BUNDLE))
     p = sub.add_parser("usage", help="consented usage data, local only: " + " | ".join(USAGE_ACTIONS))
     p.add_argument("action", choices=USAGE_ACTIONS)
-    p.add_argument("rest", nargs="*", help="set: level L | CATEGORY on|off | retention DAYS; add: CATEGORY [k=v...] (without fields, lists them); use: ID; forget: [CATEGORY]")
+    p.add_argument("rest", nargs="*", help="set: level L | CATEGORY on|off | retention DAYS; add: CATEGORY [k=v...] (without fields, lists them); use: ID; forget: [CATEGORY]; measure: [QUESTION | ID into|withhold RECORD]")
     p.add_argument("--json", help="add: the fields as one JSON object")
     p.add_argument("--repo", default=str(OWN_REPO))
     p.add_argument("--memory", help="brief: the assistant's memory folder")
@@ -4977,7 +5744,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--top", type=int, default=3)
     p.add_argument("--cards", action="store_true", help="also print each card's Not when and Check")
     p.add_argument("--bundle", default=str(OWN_BUNDLE))
-    p = sub.add_parser("close", help="the close's deterministic checks in one command: verify, trailers, ids, decisions, docs-drift, memory (exit 1 on any)")
+    p = sub.add_parser("close", help="the close's deterministic checks in one command: verify, trailers, ids, decisions, docs-drift, memory, machines (exit 1 on any)")
     p.add_argument("--repo", default=str(OWN_REPO))
     p.add_argument("--base", help="the session's first commit's parent: trailers and docs-drift read BASE..HEAD")
     p = sub.add_parser("docs-drift", help="documents left stale by a change, from the carrier's docs-map.toml (exit 1 on a blocking rule)")
@@ -4992,6 +5759,31 @@ def _parser() -> argparse.ArgumentParser:
     p = sub.add_parser("count", help="entries mentioning a symptom, not incidents; a line repeated word for word is flagged, never subtracted")
     p.add_argument("symptom")
     p.add_argument("files", nargs="*", metavar="FILE", help="default: the carrier file's `log`, else this repository's .claude/logs/agent-changelog.md")
+    p = sub.add_parser("docs", help="fingerprint OLD NEW (or --rev REV FILE): what carries meaning, before and after an edit; "
+                       "lint FILE...: the mechanical rules. Standard library only; exit 1 on a difference or a problem")
+    p.add_argument("action", choices=("fingerprint", "lint"))
+    p.add_argument("files", nargs="+")
+    p.add_argument("--rev", help="fingerprint: compare FILE with its text at this git revision")
+    p = sub.add_parser("plan", help="plan page: a plan file's fixed sections (method/templates/plan.md) rendered as a page on "
+                       "the shipped template, standard library only; exit 1 while a section is missing or a placeholder left")
+    p.add_argument("action", choices=("page",))
+    p.add_argument("file")
+    p.add_argument("--out", help="the page to write (default: standard output); keep it outside the repository")
+    p.add_argument("--template", help="another page template with {{title}}, {{lead}} and {{body}}")
+    p.add_argument("--lang", default="en", help="the page's language tag (default en)")
+    p = sub.add_parser("spec", help="a spec in shape B (method/templates/spec.md): sections, requirement ids, decisions that "
+                       "exist, scenarios, links; an open marker blocks the plan (exit 1)")
+    p.add_argument("file")
+    p.add_argument("--decisions", help="the decisions log (default: decisions.md beside the spec)")
+    p.add_argument("--plan", help="a plan whose tasks must cite every requirement, and only those")
+    p = sub.add_parser("machine", help="the machine register: this machine's random id (--mint once), its row (--write), "
+                       "the register's check (--check); names and paths never written")
+    p.add_argument("--mint", action="store_true", help="mint this machine's id, outside every repository")
+    p.add_argument("--write", action="store_true", help="write or replace this machine's row from the local manifest")
+    p.add_argument("--waits", help="with --write: what waits on this machine, naming no carrier and no path")
+    p.add_argument("--check", action="store_true", help="check every row of the register (exit 1 on any problem)")
+    p.add_argument("--file", default=MACHINE_REGISTER, help=f"the register, relative to --repo (default {MACHINE_REGISTER})")
+    p.add_argument("--repo", default=".")
     p = sub.add_parser("memory-diff", help="each local assistant memory, and whether the repository holds what it names")
     p.add_argument("--repo", default=str(OWN_REPO))
     p.add_argument("--memory", help="the memory folder (default: the assistant's, for REPO)")
@@ -5385,6 +6177,82 @@ def _run(args: argparse.Namespace) -> int:
               "the unit is entries that mention it, not incidents: read each hit, and count incidents"
               + (f". {len(repeats)} of them repeat an earlier line word for word (marked =): read them, each is a copy "
                  "or a recurrence" if repeats else ""))
+        return 0
+    if args.command == "docs":
+        if args.action == "lint":
+            problems, warnings = [], []
+            for name in args.files:
+                found = docs_lint(Path(name)) if Path(name).is_file() else ([f"{name}: no such file"], [])
+                problems += found[0]
+                warnings += found[1]
+            for line in problems:
+                print("  x " + line)
+            for line in warnings:
+                print("  ! " + line)
+            print(f"docs lint: {len(args.files)} files, {len(problems)} problems, {len(warnings)} warnings")
+            return 1 if problems else 0
+        if args.rev:
+            if len(args.files) != 1:
+                raise RefusedError("docs fingerprint --rev REV FILE: one file")
+            path = Path(args.files[0])
+            shown = subprocess.run(["git", "-C", str(path.resolve().parent), "show", f"{args.rev}:./{path.name}"],
+                                   capture_output=True, text=True)
+            if shown.returncode:
+                raise RefusedError(f"git show {args.rev}:{path.name}: {shown.stderr.strip()}")
+            old, new = shown.stdout, path.read_text(encoding="utf-8")
+        elif len(args.files) == 2:
+            old, new = (Path(f).read_text(encoding="utf-8") for f in args.files)
+        else:
+            raise RefusedError("docs fingerprint OLD NEW, or --rev REV FILE")
+        problems, warnings = docs_compare(old, new)
+        for line in problems:
+            print("  x " + line)
+        for line in warnings:
+            print("  ! " + line)
+        print("docs fingerprint: " + (f"{len(problems)} kinds of meaning changed; each must be one the request asked for"
+                                      if problems else "nothing that carries meaning changed"))
+        return 1 if problems else 0
+    if args.command == "plan":
+        page, problems = plan_page(Path(args.file), Path(args.template) if args.template else None, args.lang)
+        for line in problems:
+            print("  x " + line)
+        if page is None:
+            print(f"plan page: {len(problems)} problems, nothing written")
+            return 1
+        if args.out:
+            Path(args.out).write_text(page, encoding="utf-8")
+            print(f"plan page: wrote {args.out}; publish it as the plan's artifact, at a pause, a close or when asked")
+        else:
+            sys.stdout.write(page)
+        return 0
+    if args.command == "spec":
+        problems, warnings, n = spec_check(Path(args.file), Path(args.decisions) if args.decisions else None,
+                                           Path(args.plan) if args.plan else None)
+        for line in problems:
+            print("  x " + line)
+        for line in warnings:
+            print("  ! " + line)
+        print(f"spec: {n} requirements, {len(problems)} problems, {len(warnings)} warnings")
+        return 1 if problems else 0
+    if args.command == "machine":
+        path = Path(args.repo) / args.file
+        if args.mint:
+            print(f"minted {mint_machine_id()}, in {_config_dir() / 'machine.toml'}; never commit it")
+            return 0
+        if args.write:
+            print("wrote " + machine_write(path, args.waits))
+            return 0
+        if args.check:
+            problems = machine_problems(path) if path.is_file() else [f"{path}: no register"]
+            for problem in problems:
+                print("  x " + problem)
+            print(f"machine register: {len(problems)} problems")
+            return 1 if problems else 0
+        own = machine_id()
+        if not own:
+            print("this machine has no id: run `bundle.py machine --mint` once")
+            return 1
+        print(f"this machine is {own}; carriers: {machine_carriers() or 'none in the manifest'}")
         return 0
     if args.command == "memory-diff":
         repo = Path(args.repo).resolve()
