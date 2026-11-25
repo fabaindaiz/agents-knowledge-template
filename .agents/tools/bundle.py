@@ -358,6 +358,16 @@ DOMAIN_NOUNS = (
     "updater", "device fleet", "fleet", "vehicle", "drone", "robot", "printer", "cart", "checkout", "merchant", "retail",
     "restaurant", "booking", "hotel", "flight", "dating", "social network")
 DOMAIN_NOUN = re.compile(r"\b(?:" + "|".join(re.escape(n) for n in DOMAIN_NOUNS) + r")(?:e?s)?\b", re.IGNORECASE)
+DOMAIN_NOUN_IDIOM = {
+    "character": re.compile(r"\d[\d.,]*\s*-?\s*$"),
+    "debt": re.compile(r"\b(?:technical|tech)\s+$", re.IGNORECASE),
+    "checkout": re.compile(r"\b(?:git|main|local|fresh|clean|working|sparse|own|repository's|repo's)\s+$", re.IGNORECASE),
+}
+
+
+def _idiom(text: str, m: re.Match) -> bool:
+    rule = DOMAIN_NOUN_IDIOM.get(re.sub(r"e?s$", "", m.group(0).lower()))
+    return bool(rule and rule.search(text[:m.start()]))
 
 CODE_NAME_FORMS = (
     re.compile(r"^_*[a-z][a-z0-9]*[A-Z][A-Za-z0-9]*$"),
@@ -381,7 +391,7 @@ BLOCKQUOTE = re.compile(r"^\s*>\s+(.*\S)")
 LARGE_NUMBER = re.compile(r"(?<![\w.,:/#@$€£¥-])(\d{1,3}(?:[,\u00a0\u202f ]\d{3})+|\d{4,})(?![\w/:@%-]|[.,]\d)")
 N_OF_M = re.compile(r"\b\d+\s+(?:of|out of)\s+(?:the\s+)?\d+\b")
 STANDARD_NUMBER = re.compile(r"\b(?:RFC|ISO|IEC|IEEE|PEP)[\s-]*(?:\d+\s*/\s*)*$")
-PRIVACY_ALLOW = re.compile("privacy-" + r"allow:[ \t]*([^`\n]*?)[ \t]*(?:-->|$)")
+PRIVACY_ALLOW = re.compile("privacy-" + r"allow:[ \t]*([^`\n|]*?)[ \t]*(?:-->|\||$)")
 IDS_ALLOW = re.compile("ids-" + r"allow:[ \t]*([^`\n]*?)[ \t]*(?:-->|$)")
 PLACEHOLDER_REASON = re.compile(r"^<[^>]*>$")
 PLACEHOLDER = re.compile(r"<[A-Za-z][\w .-]*>|\bexample\.(?:com|org|net)\b|\b(?:owner|OWNER)/(?:repo|REPO)\b|\b(?:YOUR|your)[-_]")
@@ -454,16 +464,19 @@ def _offsets(text: str) -> list[str]:
 
 OWN_VERSION = re.compile(r"(?:^|[\s\"])v?0\.0\.\d+\"?$")
 NAMED_STANDARDS = re.compile(r"(?i)(?:semantic versioning|semver|keep a changelog|changelog|versioning)\s+v?\d+\.\d+\.\d+$")
+RELEASE_WORDS = re.compile(r"(?i)^(?:release[sd]?|requires?|cuts?|cutting|minor|major|patch|version|tag)\s+v?\d+\.\d+\.\d+$")
+RELEASE_SUBJECT = re.compile(r"(?i)(?:^|[(\[,;:.]|\b(?:the|a|an|this|that|its|it|next|first|last|each|every|our|home|bundle|which|and|or))\s*$")
 
 
 def _version_pins(text: str) -> list[str]:
     return [m.group(0) for m in VERSION_PIN.finditer(text)
-            if not OWN_VERSION.search(m.group(0)) and not NAMED_STANDARDS.search(m.group(0))]
+            if not OWN_VERSION.search(m.group(0)) and not NAMED_STANDARDS.search(m.group(0))
+            and not (RELEASE_WORDS.match(m.group(0)) and RELEASE_SUBJECT.search(text[:m.start()]))]
 
 
 def _ids_beside_domains(text: str) -> list[str]:
     ids = [m.group(0) for m in CARRIER_OR_RECORD_ID.finditer(text) if (m.group(1) or m.group(2)) not in EXAMPLE_ID_HEX]
-    nouns = [m.group(0) for m in DOMAIN_NOUN.finditer(text)]
+    nouns = [m.group(0) for m in DOMAIN_NOUN.finditer(text) if not _idiom(text, m)]
     return [f"{ids[0]} beside {nouns[0]!r}"] if ids and nouns else []
 
 
@@ -485,6 +498,11 @@ def _large_counts(text: str) -> list[str]:
         if len(digits.rstrip("0")) < 2:
             continue
         if STANDARD_NUMBER.search(text[:m.start(1)]):
+            continue
+        if m.group(1).isdigit() and 7 <= len(digits) <= 40 and text[m.start(1) - 1 : m.start(1)] == "`" \
+                and text[m.end(1) : m.end(1) + 1] == "`":
+            continue
+        if text[m.start(1) - 1 : m.start(1)] == "{" and text[m.end(1) : m.end(1) + 1] in ("}", ","):
             continue
         found.append(m.group(1))
     return found
@@ -1393,22 +1411,26 @@ TABLE_SEPARATOR = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$
 _PATHLIKE = re.compile(r"^[\w./-]*(/[\w.-]+|\w\.(?:py|pyi|md|mdc|json|jsonc|ya?ml|toml|ini|cfg|sh|bash|js|mjs|cjs|ts|tsx|jsx|rs|go|java|kt|swift|rb|php|cs|c|h|cc|cpp|hpp|sql|html|css|txt|lock|gradle|xml|ps1|bat))$")
 
 
-def table_cells(line: str) -> list[str]:
-    """The cells of a markdown table row; a `|` escaped, or inside a code span, is part of its cell.
+def table_cells(line: str, code_spans: bool = True) -> list[str]:
+    """The cells of a markdown table row; a `|` escaped (`\\|`) is part of its cell.
 
-    A code span opens with a run of backticks and closes with the next run of the same length (CommonMark),
-    so ```` ``` ```` is one span holding a fence; a run never closed is literal text.
+    With `code_spans`, a `|` inside a code span is part of its cell too: a span opens with a run of backticks
+    and closes with the next run of the same length (CommonMark), so ```` ``` ```` is one span holding a fence;
+    a run never closed is literal text. Without it, only the escape protects a pipe (the tracking tables).
+    A row's closing pipe opens no cell; without a closing pipe, the text after the last one is a cell (an empty
+    one only without `code_spans`).
     """
     cells, cell, i = [], [], 0
     body = line.strip()
     body = body[1:] if body.startswith("|") else body
+    closed = body.endswith("|") and not body.endswith("\\|")
     while i < len(body):
         ch = body[i]
         if ch == "\\" and i + 1 < len(body) and body[i + 1] == "|":
             cell.append("|")
             i += 2
             continue
-        if ch == "`":
+        if ch == "`" and code_spans:
             run = len(body[i:]) - len(body[i:].lstrip("`"))
             close = re.compile(rf"(?<!`)`{{{run}}}(?!`)").search(body, i + run)
             end = close.end() if close else i + run
@@ -1421,7 +1443,7 @@ def table_cells(line: str) -> list[str]:
         else:
             cell.append(ch)
         i += 1
-    if "".join(cell).strip():
+    if not closed and ("".join(cell).strip() or not code_spans):
         cells.append("".join(cell).strip())
     return cells
 
@@ -2023,22 +2045,8 @@ def is_carrier_owned(rel: str) -> bool:
 
 
 def split_row(line: str) -> list[str]:
-    """The cells of one markdown table row; `\\|` is a pipe inside a cell."""
-    cells, current, i, inner = [], [], 0, line.strip()[1:]
-    inner = inner[:-1] if inner.endswith("|") and not inner.endswith("\\|") else inner
-    while i < len(inner):
-        if inner[i] == "\\" and inner[i + 1 : i + 2] == "|":
-            current.append("|")
-            i += 2
-            continue
-        if inner[i] == "|":
-            cells.append("".join(current).strip())
-            current = []
-        else:
-            current.append(inner[i])
-        i += 1
-    cells.append("".join(current).strip())
-    return cells
+    """The cells of one tracking-table row: only `\\|` is a pipe inside a cell (`table_cells` without code spans)."""
+    return table_cells(line, code_spans=False)
 
 
 def read_table(path: Path, header: str, prefix: bool = False) -> list[list[str]]:
@@ -4524,11 +4532,16 @@ def usage_consent_path():
 
 
 def usage_state_dir(repo):
-    """Where a carrier's usage data lives: the user's state folder, never a repository."""
+    """Where a carrier's usage data lives: the user's state folder, never a repository. An `XDG_STATE_HOME` the
+    user set is honoured on every platform but Windows, which has its own variable (0.0.35: macOS ignored it)."""
     name = str(((read_carrier(repo / ".agents") if (repo / ".agents").is_dir() else None) or {}).get(CARRIER_FIELD, ""))
     home = Path.home()
-    base = {"darwin": home / "Library/Application Support", "win32": Path(os.environ.get("LOCALAPPDATA") or home / "AppData/Local")}.get(
-        sys.platform, Path(os.environ.get("XDG_STATE_HOME") or home / ".local/state"))
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or home / "AppData/Local")
+    elif os.environ.get("XDG_STATE_HOME") and Path(os.environ["XDG_STATE_HOME"]).is_absolute():
+        base = Path(os.environ["XDG_STATE_HOME"])
+    else:
+        base = home / ("Library/Application Support" if sys.platform == "darwin" else ".local/state")
     return base / "agent-guides" / (name if CARRIER_ID.match(name) else "_none")
 
 

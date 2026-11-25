@@ -7,6 +7,44 @@ Every release of the agent-guides bundle, newest first. The format follows
 release may change the format a carrier depends on (SemVer §4); a carrier reads what changed since the
 version it holds with `bundle.py changelog --since <its version>`.
 
+## [Unreleased]
+
+## [0.0.35] - 2026-11-25
+
+**What a carrier runs at this update: nothing to do, and three habits change.** A close pushes in a command of its
+own; a harvest's notes take fixed sections and list every frontier first; and `privacy` stops failing on the shapes
+that were worded around eight times. If you kept a `privacy-allow` only for one of those shapes, it may now go; an
+allowance inside a table cell is read where it stands.
+
+### Changed
+
+- **A harvest's working notes have fixed sections**, set before the first read and pasted to every reader in one
+  brief: five per repository (what changed, what the human said, frictions counted, candidates with their
+  target, what stays local), four consolidated piles with a recommendation each, and one apart for what the
+  human must see now. And before the first carrier is read, every carrier's frontier is listed, so a missed one
+  is found by the list (`prompt-harvest.md`).
+- **The enforcement ladder names the shell construct that is the agent's own habit**: under zsh an unquoted
+  list variable is one argument, and a list passed as a program's argument vector removes the construct
+  (`prompt-context.md`).
+- **The close skill makes the push a step of its own**: one command, after the checks it depends on have printed,
+  never chained to a check, a commit or an edit, since a host may refuse a command whole for one part of it and
+  then nothing in it lands.
+- **`bundle.py` reads a table row with one parser**: the tracking tables' reader is the decisions' reader without
+  code spans, so a fix to one is a fix to both; every table row in the home reads the same as before.
+
+### Fixed
+
+- **`privacy` stops failing on the shapes that were worded around eight times in three sessions**, each exception
+  as narrow as the case it answers: *characters* after a number (a width), *technical debt*, and a main, local or
+  fresh `checkout` (git's working copy) no longer count as a domain beside an id, while any other domain noun after
+  a number still does; a version after *release*, *requires*, *cuts*, *minor* or *tag* is a release only where no
+  name stands before the word (`it requires`, not a package's); a commit hash of digits only in a code span, and a
+  repeat count in braces, are not counts, while a formatted count in a code span still is; and an allowance written
+  inside a table cell is read, its reason closed by the cell's pipe. Each exception's test also asserts the leak
+  beside it still fails; an isolated review found the first, wider versions letting real evidence through.
+- **`bundle.py usage` honours an `XDG_STATE_HOME` you set on macOS**, as it already did on Linux, and ignores a
+  relative one, as the XDG specification says; without it the folder is unchanged.
+
 ## [0.0.34] - 2026-11-25
 
 **What a carrier runs at this update: nothing new, and one check now stops.** The build no longer reads a note's
