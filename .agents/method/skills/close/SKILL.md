@@ -10,11 +10,29 @@ allowed-tools: Bash, Read, Edit, Write, Grep
 A close is worth what the next session can do with it **on another machine, with no memory of
 this one**. Run every step; say which ones found nothing.
 
+## Before it starts: the pre-review
+
+This process is long. Before its first step, one message: the important questions still open for it, at most four,
+each with a recommendation, found by cheap reads only (`git status`, the hand-off, a review pending, `proposed`
+decision rows), such as a review still pending, whether to push at the end, uncommitted work that is not the
+session's; and, unless the human asked for this process by name or command, whether to run it in full. Asked for by
+name and nothing open: start. Each answer is written where it belongs (a decision row, the roadmap, the plan) even
+when the human declines the process, and goes in with the session's next commit (`d-5ed7e8-d7c0b7`).
+
 ## 0. Pause is not close
 
-"Pause", "leave it paused", "no commits": stop where you are. No commits, no merge, no record that a
-step was skipped, until the human says to resume. **A close never skips a review**, and never merges
-work a review has not read: if one is pending, say so and stop there.
+A pause is not a close, and it comes in two kinds; which one is the human's words, not your guess (the
+owner's ruling, 0.0.34):
+
+- **A pause asked with time** ("pause when you can", "leave it there for today"): finish the step under way,
+  start nothing new, and stop. Write what the next session needs to resume — where the work stands and what
+  comes next — where it would be read, committed only where the human allows commits.
+- **An immediate pause** ("stop", "pause now"): write only what is urgent — what would be lost, or what
+  another reader would take for finished — and stop.
+
+Either way, no merge and no new work until the human says to resume, and "no commits" in their words means
+none. **A close never skips a review**, and never merges work a review has not read: if one is pending, say so
+and stop there.
 
 **A push or a deploy is not a close either.** When one is about to end a plan and no close has run in
 this session, offer the close in one question first: the counts, the deferred findings, the device
@@ -66,6 +84,28 @@ states none). Replace each comment, and beyond the format:
   priced.
 - **Procedures done by hand:** the same search. The second occurrence is a proposed skill or script,
   with its cost.
+
+- **Usage data, only as consent allows.** Run `python3 .agents/tools/bundle.py usage needs-consent`. On `ask`
+  (or an error, shown), show the user the text below in their language and take the answer with `usage set`
+  (level, or a category `on|off`); unanswered, store nothing and do not ask again this session. On `ok:
+  <categories>`, record only the categories listed, with `usage add CATEGORY` (alone, it prints the fields and
+  units): `frictions`, counts; `ablation` when it ran `usage brief`; `preferences`, a table (paraphrased, why,
+  stated or inferred) confirmed row by row, shown only when listed. Then `usage show`: confirm (`usage use ID`)
+  or let go each preference expiring within 7 days. Ablation: a repeat is a user message giving an
+  instruction already given; a correction rejects what the agent just did. Show both counts before recording.
+
+~~~text
+Usage data stays on this machine, outside every repository and never in git. It serves to improve how
+you use the tool: calibrating agent cost estimates, seeing which steps of the method cost you most, and
+remembering your preferences. Choose:
+1. Nothing (the default).
+2. Counts only: agent costs and method frictions, no content.
+3. Full: also your preferences, each shown to you before it is stored, and the on/off comparison that
+   measures whether they help.
+4. Choose by category.
+Records are kept 90 days (a preference renews each time it is used). See them with `bundle.py usage show`,
+erase with `usage forget`, change with `usage set`. Declining changes nothing else.
+~~~
 
 ## 5. What lives only outside the repository
 
@@ -122,7 +162,7 @@ The rulings are read from wherever the plan kept them; never assume the plan per
   red and green runs; never a fix taken on the delegate's word.
 - The human's own uncommitted changes go in only when the human says so, in a commit of their own,
   as left.
-- Push, or merge into the main branch, only when the human asks.
+- Push, or merge into the main branch, only when the human asks. When asked, do it yourself and never hand the command back: to merge from an isolated worktree, leave it first; push the branch's head to the remote main as a fast-forward only when a push was asked too.
 - **Ready for review is a state of its own.** Where the host reserves merging and closing to a person, prepare
   the evidence (gates green, the pull request's body, the summary for the work item's author), move the item
   to review, and stop. After a person approves: merge, remove the worktree before deleting its branch, close

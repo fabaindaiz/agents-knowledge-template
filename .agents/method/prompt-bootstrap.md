@@ -68,8 +68,8 @@ findings, written to one dated research document as each lands.
   includes the line that sends a change touching state, a contract, data,
   security or verification to `.agents/knowledge/INDEX.md` and the cards it
   links (and a review in a fresh context, on request, to the
-  `knowledge-reviewer` subagent installed from `.agents/agents/`), and a
-  one-line privacy reminder; make the rules executable — the gate runs `bundle.py
+  `knowledge-reviewer` subagent installed from `.agents/agents/`), a one-line
+  privacy reminder, and the other lines Phase 4 names; make the rules executable — the gate runs `bundle.py
   verify` — and report how many were already being violated; remove
   duplication; audit `docs/` against the code; write the roadmap; add the
   recurring review skill.
@@ -248,8 +248,7 @@ inferred rather than read.
 
 ### Phase 2 — Research the outside (read-only but for its findings). Report before proposing anything.
 
-This is the phase most bootstraps skip, and it is what makes the rest
-non-generic. **Three searches, scoped to the questions the owner confirmed at
+**Three searches, scoped to the questions the owner confirmed at
 the pre-flight, and nothing enters the repo unless it changed or confirmed a
 decision.** Each finding is written as it lands to one dated research document
 (`docs/research/<date>-bootstrap.md`, or where the repository keeps research),
@@ -258,11 +257,7 @@ found; what answers no confirmed question is marked so.
 
 1. **The domain.** The recognised references for this kind of software —
    the canonical paper, talk, book chapter or engineering blog post that the
-   people who build these things cite. *(In an interactive renderer: frame
-   timing, input-latency calibration, perceived responsiveness. In a
-   transactional service: idempotency keys, exactly-once semantics,
-   reconciliation. In a data platform: slowly changing dimensions, late-arriving
-   data, backfill strategy.)*
+   people who build these things cite.
 2. **The language and its ecosystem.** Official style guides, the idioms the
    community treats as settled, the standard project layout, the known traps of
    the version you are pinned to. Prefer the primary source over a summary.
@@ -281,7 +276,6 @@ Rules for this phase:
 - **Verify, do not recall.** Anything version-specific about a tool or platform
   gets checked against its documentation. State which claims you verified and
   which are from memory, and mark the second kind **ASSUMPTION**.
-- **Cite the source you actually used.** Not a plausible URL.
 - **A reference that resolves is not thereby the right one.** A finding becomes
   a decision's reason only after the cited text has been read, and the tool run
   where the claim is behavioural. A fetch tool that answers through a model
@@ -291,8 +285,7 @@ Rules for this phase:
 - **A recipe written for a different environment is the most dangerous kind of
   correct.** Say which environment a recommendation assumes.
 - **Cap it.** Five to fifteen sources that changed something beats fifty that
-  did not. If a search produced nothing that changes a decision, say that — it is
-  a valid and useful result.
+  did not. If a search changed no decision, say that.
 
 ### Phase 3 — Propose (still do not write)
 
@@ -333,8 +326,7 @@ is in use** (experimental), list them in `carrier.toml` (`surfaces = ["cursor",
 `.claude/rules/` and of those agents, and Copilot's pointer to `AGENTS.md`, and
 `verify` then fails a copy that is stale or edited. The researcher's hook,
 which keeps its shell to reads and fetches into a temporary folder, runs only
-in a folder the host trusts. Without the line the knowledge
-base is a folder nobody opens. The same map gets a second line, also in the
+in a folder the host trusts. The same map gets a second line, also in the
 repository's own words: *nothing written into `.agents/` or any file that leaves
 this repository may identify, directly or by reconstruction, a private
 repository, its people or its users — `bundle.py privacy .agents` checks it*
@@ -345,7 +337,10 @@ repository's own; where it names a file, a format, a step, a work item or a
 commit rule this repository defines differently (its task tracker, its plans,
 its review, its logs, its numbering), this repository's wins, and
 `.agents/carrier.toml` `adapted` records the mapping* (principle 19). And a
-short fourth: *make independent tool calls in one message, in parallel*. Where the
+short fourth: *make independent tool calls in one message, in parallel*. And a fifth: *when decisions are the user's,
+ask as `.agents/method/prompt-context.md` §15 says: one message, each option shown by
+example with its price, the recommendation first, and a "review more" answer; when more
+remain than one message holds, run `decision-review`* (principle 15). Where the
 host's plan or spec template wins, map the card lookup into it explicitly, one
 line in its header; otherwise the step has no slot and quietly stops. **Keep the host's own tools off the bundle**: exclude `.agents/` from the
 repository's linters, formatters and ratchets, which would count its tool as new
@@ -363,7 +358,7 @@ verify` (which runs `privacy`) and `bundle.py ids` over the files that hold
 record ids; wherever the gate runs, CI included, the tool needs Python 3.11 or
 newer. Add
 the schema if there is structured data. Add hooks for what must not be left to judgement. Add
-`permissions.deny` for the files that should not be hand-edited.
+`permissions.deny` for the files that should not be hand-edited (only a tool writes them; `ask` for generated files and guards: `prompt-context.md`, *A file rule catches a by-product edit*).
 
 **Commit attribution is set in the repository, not left to prose**: off in the
 committed settings, with a hook or gate step that fails on an attribution
@@ -383,9 +378,8 @@ once, with pointers to it.
 ### Phase 7 — Audit `docs/` against the code
 
 Contrast every document with what is on disk. Update or delete what is stale.
-**A document pointing at a deleted file is worse than no document**, and this is
-the single most common decay in an agent-assisted repo, because agents delete
-code faster than they re-read prose. Sweep for the names of anything you removed.
+**A document pointing at a deleted file is worse than no document.** Sweep for the names of anything
+you removed.
 
 ### Phase 8 — Roadmap and progress evaluation
 
@@ -395,11 +389,9 @@ in motion, in the same vocabulary as the invariants.
 
 ### Phase 9 — The recurring review
 
-Bootstrapping is not the end; the system rots without a ritual. Add a
-`state-review` skill that runs on demand and answers:
+Add a `state-review` skill that runs on demand and answers:
 
-- Does every document named in the map exist, and is every claim in it still
-  true?
+- Does every document named in the map exist, and is every claim in it still true?
 - Does every rule still have an enforcer, and did any of them fire this period?
 - What changed that should have become a decision row and did not?
 - What in the roadmap is now closed — by being built, or by a measurement?
@@ -412,6 +404,14 @@ Bootstrapping is not the end; the system rots without a ritual. Add a
   what survives it.
 - **Is this repo's bundle behind the latest release?** If so, run the update
   invocation before the next significant piece of work, not after it.
+
+**A skill's own text never names this repository's directories.** Where a step needs
+them — the area guides to read, where the browser tests live — it says to read them
+from that skill's `LOCAL.md`, and falls back to finding the files when `LOCAL.md`
+says nothing. A path written into the skill goes stale the day a directory moves,
+and a skill installed from the bundle cannot be fixed here: its file is generated,
+and the permission rules ask before any skill file is edited. One carrier moved its
+web application and was left with two installed skills pointing at the old place.
 
 ---
 
@@ -439,8 +439,7 @@ did not. A whole-branch review is offered when a multi-task plan is done.
 ### 0. The opening brief — load the world before you touch the request
 
 **Do this before answering, before planning, and before agreeing that the
-request makes sense.** A session that starts by reading only the request is
-working from the one source that has no memory. A complex task is routed by
+request makes sense.** A complex task is routed by
 its signals (`.agents/method/skills/README.md`).
 
 Gather, in this order, stopping as soon as a source has nothing to add:
@@ -465,6 +464,8 @@ Gather, in this order, stopping as soon as a source has nothing to add:
   human asking for it usually does not know that.
 - **What friction is still open.** Process items recorded and not yet fixed,
   especially any that today's work will hit again.
+
+Run `bundle.py usage brief` and apply what it prints; it prints nothing without consent to preferences.
 
 **Then say it out loud, in six lines. Not a dump — a brief.**
 
@@ -492,8 +493,7 @@ Four rules for the brief, each learned from its opposite:
   information the human paid for.
 - **Written for someone who has not been here since last week**, because that is
   usually true. Name things, do not allude to them.
-- **Six lines, not six paragraphs.** Anything longer gets skimmed, and a skimmed
-  brief is worse than none: it has been paid for and not read.
+- **Six lines, not six paragraphs.** Anything longer gets skimmed.
 
 > **Example.** A session opened on "keep adding roadmap items". Three lines of
 > the brief mattered: a task-runner change **staged by another session**, not to
@@ -551,14 +551,13 @@ evaluating, and it has a shape worth following:
    40 ms at p99"*, *"this is the first native dependency in a repo that is
    currently script and data"*. An option priced in adjectives cannot be
    compared with anything.
-2. **Say what each option forecloses**, not only what it costs today. Foreclosure
-   is the part nobody can reconstruct from the code a year later.
+2. **Say what each option forecloses**, not only what it costs today.
 3. **Count the exceptions.** If an option needs an exception to a stated rule,
    *that* is the real price, and it has to be written into the roadmap **with a
    name** — one mechanism, one owner, one way back. An exception nobody named
    becomes the new rule.
 4. **Name the cheap reversible option**, and say so plainly when it is the one
-   you recommend. Reversibility is worth a lot of elegance.
+   you recommend.
 5. **Keep "do nothing" on the table.** It wins more often than it is offered.
 6. **Say what would change your answer.** A trade-off you cannot falsify is a
    preference. *"If the target ever reports dropped frames, this measurement gets
@@ -595,8 +594,10 @@ Two habits that carry the reasoning forward:
 
 Before claiming done, run the check of every card this change relied on (its
 *Check* line, in `.agents/knowledge/cards/`), and say in the report which ran.
-In a git worktree, run a check from an environment bound to that worktree, or
-read its result as unproven.
+In a git worktree, build an environment for the worktree where that is
+cheap and reproducible, and its result is proven; where it is not, run the
+check from the main working copy's environment and read its result as
+unproven. Either way the report names which of the two it was.
 
 **A document that tells a reader what to run is verified by running it.** When
 the change alters what a procedure, a runbook, an invocation, a checklist or a
@@ -623,10 +624,8 @@ asked for, the report offers one, in one line; it does not run it.
 
 **The whole branch, offered when a multi-task plan is done.** Before the close,
 ask in one question whether a fresh agent should review the whole branch, given
-the plan and its decisions as intent, and give the cost: in five repositories
-each took four to twenty minutes (about a hundred thousand tokens where
-counted), and nearly every one found a defect that the green gate, and any
-per-task review, had passed (thin evidence: principle 19). Not for one small
+the plan and its decisions as intent, and give the cost (in five repositories each took four to twenty minutes,
+about a hundred thousand tokens where counted; thin evidence: principle 19). Not for one small
 commit.
 
 - **Fix the findings and nothing else**, then send only what changed for a
@@ -641,22 +640,18 @@ commit.
 The gate is the floor. The core invariant's own test — the replay, the round
 trip, the wheel installed clean — is cheap relative to a wrong claim: **if the
 report will say the invariant holds, run the thing that proves it**, even when
-you are confident nothing you touched could have moved it. Confidence is not a
-measurement.
+you are confident nothing you touched could have moved it.
 
 **Verification is a step, not a reflex.** Run it once per finished unit of work,
 not between two edits of the same change. Scope it by the measured cost of each
-test area (in one repository a single directory was most of the suite's time),
+test area,
 and run the whole suite for changes that cross layers.
 **Report exactly which selection ran**; a scoped run presented as the suite is a
 false claim. A collection error is reported, never routed around with a skip.
 
 **Before calling a red check yours or pre-existing, measure the untouched base**
 in the same environment — a clean export of `HEAD` (`git archive HEAD | tar -x
--C <scratch>`) or a separate worktree — without touching the working tree. One
-repository found its gate had been failing on `main` all along only by doing
-this; another proved a rising count came
-from concurrent edits in the same tree, not from the change.
+-C <scratch>`) or a separate worktree — without touching the working tree.
 
 **A change meant to change nothing is proved by what it must preserve, compared
 mechanically.** Before a refactor, move, regeneration, reformat or translation,
@@ -670,9 +665,7 @@ artefact, is `../knowledge/notes/active/validate-each-transformation-run.md`.
 
 ### 5. Look at what you made
 
-Principle 14, applied. Render it, run it, open it, read it. Budget for the fact
-that this step finds things — it found two defects in the example above, one of
-them in a branch that predated the change by months.
+Principle 14, applied. Render it, run it, open it, read it.
 
 ### 6. Put the documents back to true — in this change, not later
 
@@ -695,13 +688,11 @@ sentence anywhere in the repo that my change just made false?**
 
 ### 7. Report honestly, and let the human decide what is theirs
 
-The report is not a victory lap. It says what was built, **what the first
+It says what was built, **what the first
 attempt got wrong and what caught it**, what was measured, what was left
 undone, and — separately and explicitly — **any structural decision you
 declined to make on your own**. Put that last one where it cannot be missed; it
-is the one part of the report the human must act on. Re-read the human's whole
-message first, and any sent mid-turn: every part is done or named as not done
-(principle 15).
+is the one part of the report the human must act on.
 
 Commits are split by *what changed and why*, and only the ones that pass the
 repo's stated bar are offered. A commit that needs an "and" in its subject is
@@ -745,8 +736,7 @@ Three rules underneath it:
 - **Technical names stay in their own language.** Identifiers, commands, types,
   file paths and error strings are quoted exactly, in English, whatever language
   the prose around them is in; the headings and keywords a tool parses (a plan
-  skill's task heading) follow the tool. A translated command is a command that does not
-  run, and a translated symbol cannot be searched for.
+  skill's task heading) follow the tool.
 - **Talk to the human in their language; write documents in the
   repository's.** The method documents are English (`prompt-context.md`
   §*The set*).
@@ -812,19 +802,10 @@ process work either absent or exhausting:
   friction (2nd hit — see roadmap). Nothing needs you.` Expand only if asked.
   The changelog entry's *Learned* carries the same line.
 
-The human shipping a feature is not interrupted; the one improving the process
-finds a year of honest observations waiting.
-
 **The closing question, asked plainly:** *if the next session is a different
 agent, on another machine, with no memory of this one, what would it have to
 re-derive?* Everything that answers that question is a gap you can close in the
 next two minutes, and will never close as cheaply again.
-
-> **Example.** One session's harvest was four rows: two decisions with
-> enforcers, one number that moved into the document owning it, one roadmap
-> entry flipped from *planned* to *done, and here is what is still missing* —
-> and one honest `nothing generalises` for the rest. The whole thing took less
-> time than re-reading the diff.
 
 ### Working safely in a tree you do not own
 
@@ -850,9 +831,7 @@ Six hazards, all of which have cost real time:
   and name every file it refused. Prefer the `--check` variant everywhere else —
   it writes nothing and is always safe.
   **Format only the files in the change**: a repo-wide format mixes unrelated
-  diffs into yours and can move a suppression pragma off the line it covered —
-  one repository saw its type-error count rise by about ten that way, with no
-  semantic change.
+  diffs into yours and can move a suppression pragma off the line it covered.
 - **Generated artefacts churn.** Regenerating can rewrite a file with new random
   identifiers and no real change. Put back the ones that did not actually change
   — only files *your* change regenerated, by writing `HEAD`'s content over them
@@ -914,6 +893,8 @@ first checks that its target resolves inside that directory.
       security or verification to `.agents/knowledge/INDEX.md` and the cards it
       links, and a review on request to the reviewer, installed from
       `.agents/agents/knowledge-reviewer.md` in the assistant's agent folder.
+- [ ] The root file's map sends the user's decisions to principle 15's way of
+      asking, and to `decision-review` when one message cannot hold them.
 - [ ] `docs/references.md`: only entries that changed or confirmed a decision,
       each stating what you do differently on purpose.
 - [ ] `docs/roadmap.md`: collisions, what must be decided first, closed-by-
@@ -938,7 +919,6 @@ first checks that its target resolves inside that directory.
 - [ ] The engineering standards are stated in the repo's own vocabulary: the
       test discipline, the strictness level types are set to, what a docstring
       owes, and the domain's non-negotiables.
-- [ ] Nothing existing was renamed or reorganised without explicit approval.
 - [ ] Each objective confirmed at the pre-flight is delivered, or reported as
       not, with its reason.
 - [ ] Accepted by a first real task: the owner names one, it runs through the
@@ -962,19 +942,12 @@ The short one. Run it before you report, every time.
       undone, and fills *Review*, *Learned* and *Cards relied on*. Every new
       record — entry, decision row, roadmap item — has an id from
       `bundle.py id`, not a number.
-- [ ] Every part of the human's message, those sent mid-turn included, is done
-      or named as not done.
 - [ ] Where the change touched state, a contract, data, security or
       verification, the cards the index links were applied before the design
       decision and their checks ran before claiming done; a review asked for
       ran on the diff, with at most two re-reviews; and none asked for, a change
       that deletes or rewrites stored data, moves money or touches
       authentication offered one in its report.
-- [ ] A multi-task plan that ended offered a whole-branch review in a fresh
-      context, in one question with its cost.
-- [ ] Any structural decision you declined to take is stated plainly in the
-      report, where the human cannot miss it.
-- [ ] Nothing of somebody else's was swept into your change.
 - [ ] The closing review ran: what this change invalidated was re-run, the
       learnings were routed to their homes, and the answer to *"what would the
       next agent have to re-derive?"* is written down somewhere.
@@ -983,20 +956,13 @@ The short one. Run it before you report, every time.
       any ledger for the symptom, and is written down.
 - [ ] Process improvements were **proposed, not performed** — except a one-line
       reversible one, which is named in the report.
-- [ ] Learnings and friction were **captured in full**, regardless of whether
-      this was a session about improving anything, and summarised in one line.
-- [ ] The test was written before the code, and it failed first for the reason
-      expected. Any exception is named as one.
 - [ ] In a workspace: today's repo was named, its conventions were re-read
       rather than recalled, and no rule crossed a repository boundary.
-- [ ] Nothing technical was simplified away from the report — order was chosen,
-      content was not trimmed.
 
 ### Smells that mean it went wrong
 
 Each is the visible sign of a rule above being broken; the rule is in brackets.
 
-- The root file is 600 lines — its middle is not read (principle 5).
 - A rule with no enforcer and no `—`: a wish presenting as a rule (principle 1).
 - Every decision row says "code review": review is a hope with a meeting
   attached, not an enforcer (principle 1).
@@ -1007,17 +973,12 @@ Each is the visible sign of a rule above being broken; the rule is in brackets.
   are being edited out (artifact 5).
 - The audit script passed on its first run: the rules are trivial or the checks
   are not checking (principle 2).
-- Two documents state the same number; one is already stale (principle 5).
 - The agent keeps proposing something already decided: the decision, or its
   number, is missing from `decisions.md` (principle 10).
 - The agent asked nothing all session, or asked at every branch (principle 15).
 - A feature was declared done on a green gate alone (principle 14).
-- A limit in the gate was raised in the same commit as a feature (*Working
-  safely*).
 - No session ever proposed a process improvement, the process area is empty
   after months, or an improvement rode inside a feature commit (principle 17).
-- The opening brief is three paragraphs (step 0).
-- Every learning offered to the bundle as a candidate (*Improving the method*).
 - The tests were written after the code — the assertions describe the
   implementation's shape — or the suite has never failed on a real change
   (principle 18).
