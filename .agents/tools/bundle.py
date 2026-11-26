@@ -15,12 +15,18 @@ own tool, never by this one.
                                                                 nothing that identifies a private repository,
                                                                 its people or its infrastructure
     python3 .agents/tools/bundle.py privacy --commits RANGE [--repo R]
-    python3 .agents/tools/bundle.py privacy --tracked [--repo R]
+    python3 .agents/tools/bundle.py privacy --tracked [--repo R] [--baseline FILE [--write-baseline]]
                                                                 the same rules over a range's commit messages
                                                                 and added lines: what a push publishes
     python3 .agents/tools/bundle.py trailers [RANGE] [--repo R] no commit message in the range credits an assistant
                                                                 (an attribution trailer, a "Generated with" line);
                                                                 default @{u}..HEAD, else the commits on no remote
+    python3 .agents/tools/bundle.py red-check RANGE [--repo R]  each fix commit touching code: its new or changed
+                                                                tests fail on its parent and pass on it, or it says
+                                                                `Red: none, <reason>`; carrier.toml's [red_check]
+    python3 .agents/tools/bundle.py shell-check [--shell S] [--hook] [-- CMD]
+                                                                under zsh, a variable assigned words with spaces and
+                                                                expanded unquoted in the same command
     python3 .agents/tools/bundle.py carrier-id [REPO] [--mint]  the carrier's stored random id; --mint writes one
     python3 .agents/tools/bundle.py id d|i|s TEXT... [--repo R] a record id: decision, roadmap item, session
     python3 .agents/tools/bundle.py ids [--carrier REPO] FILE... record ids in files: malformed, defined twice,
@@ -44,8 +50,9 @@ own tool, never by this one.
     python3 .agents/tools/bundle.py machine [--mint | --write --waits W | --check]   this machine's random id and
                                                                 its row in the machine register
     python3 .agents/tools/bundle.py export [--replace] DEST   the shipped files and SHA256SUMS: a release as it travels
-    python3 .agents/tools/bundle.py propose --kind K --target SLUG (--from FILE | --claim C --evidence E) [...]
-                                                                one proposal to the bundle, in proposals/
+    python3 .agents/tools/bundle.py propose --kind K --target SLUG [--topic SLUG] (--from FILE | --claim C --evidence E) [...]
+                                                                one proposal to the bundle, in proposals/; --topic:
+                                                                which part of the target, grouped by the home
     python3 .agents/tools/bundle.py proposals [--prune | --pack FILE | --from-outbox]
                                                                 list them and what the home received; remove
                                                                 the received; pack them; convert the old outbox
@@ -101,6 +108,7 @@ import tempfile
 import tomllib
 import unicodedata
 from collections import Counter
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -490,6 +498,14 @@ def _ids_beside_domains(text: str) -> list[str]:
     return [f"{ids[0]} beside {nouns[0]!r}"] if ids and nouns else []
 
 
+def _ids_beside_domains_across(previous: str, text: str) -> list[str]:
+    """An id on one line and a description of it on the next, in one paragraph (i-5ed7e8-408166): what the
+    one-line rule cannot see once a sentence or a table wraps. Only what neither line shows alone."""
+    if not previous.strip() or not text.strip() or _ids_beside_domains(previous) or _ids_beside_domains(text):
+        return []
+    return _ids_beside_domains(previous + "\n" + text)
+
+
 def _code_names(text: str) -> list[str]:
     found = []
     for span in INLINE_CODE.finditer(text):
@@ -609,6 +625,7 @@ class Finding:
     rule: str
     where: str
     match: str
+    text: str = dataclasses.field(default="", compare=False, repr=False)
 
 
 @dataclass
@@ -819,6 +836,9 @@ def harvest_gap_problems(gaps: object, through: object = None) -> list[str]:
     return problems
 
 
+PRIVACY_LISTED_ONLY = {"id-beside-domain-nearby"}
+
+
 def held_proposal_warnings(result: "PrivacyResult") -> list:
     """The warnings the home's intake would hold a proposal back for: a WARN on a file under `proposals/`
     that no `privacy-allow` on its line answered (0.0.32). The carrier's own run reports them as failures,
@@ -830,7 +850,7 @@ def held_proposal_warnings(result: "PrivacyResult") -> list:
     """
     held = []
     for f in result.findings:
-        if f.level != "WARN":
+        if f.level != "WARN" or f.rule in PRIVACY_LISTED_ONLY:
             continue
         path = f.where.rsplit(":", 1)[0].replace("\\", "/")
         if PROPOSALS in [part for part in path.split("/") if part]:
@@ -838,8 +858,75 @@ def held_proposal_warnings(result: "PrivacyResult") -> list:
     return held
 
 
+
+PRIVACY_BASELINE_HEADER = (
+    "# The privacy ratchet's baseline (d-5ed7e8-af36e9): one known warning per line, as path, rule and a short\n"
+    "# hash of the warned line; never its text. Written by `bundle.py privacy --tracked --baseline FILE\n"
+    "# --write-baseline`, which only ever removes lines; never edit or add one by hand.\n")
+
+
+def privacy_fingerprint(rel: str, rule: str, text: str) -> str:
+    """One warning's fingerprint: `path<TAB>rule<TAB>sha256:` and 16 hex of the line's hash, normalised. The
+    prefix keeps a hash that happens to be all digits from reading as an exact count to the check itself."""
+    return f"{rel}\t{rule}\tsha256:{hashlib.sha256(_squash(text).encode('utf-8')).hexdigest()[:16]}"
+
+
+def read_privacy_baseline(path: Path) -> Counter:
+    """The fingerprints a baseline file holds, with how many warnings each stands for; empty when absent."""
+    if not path.is_file():
+        return Counter()
+    return Counter(line for line in path.read_text(encoding="utf-8").split("\n") if line.strip() and not line.startswith("#"))
+
+
+def finding_fingerprint(f: Finding, repo: Path) -> str:
+    """A finding's fingerprint, its path made relative to `repo` when it lies inside it."""
+    shown = f.where.rsplit(":", 1)[0]
+    try:
+        rel = Path(shown).resolve().relative_to(repo.resolve()).as_posix()
+    except ValueError:
+        rel = shown
+    return privacy_fingerprint(rel, f.rule, f.text)
+
+
+@dataclass
+class BaselineSplit:
+    """A run's warnings read against a baseline: the new ones, how many are known, and what is stale."""
+
+    new: list[Finding]
+    known: int
+    stale: Counter
+    found: Counter
+
+
+def baseline_split(warnings: list[Finding], repo: Path, baseline: Counter, scope: set[str] | None = None) -> BaselineSplit:
+    """Each warning is known while its fingerprint has a count left in the baseline, and new otherwise.
+
+    `scope`, when given, is the relative paths read: a fingerprint of a file outside it is not called stale,
+    because the run never looked there (the home's check reads `meta/` and `sources/` only)."""
+    left, new, found = Counter(baseline), [], Counter()
+    for f in warnings:
+        mark = finding_fingerprint(f, repo)
+        found[mark] += 1
+        if left[mark] > 0:
+            left[mark] -= 1
+        else:
+            new.append(f)
+    stale = Counter({k: v for k, v in left.items() if v > 0 and (scope is None or k.split("\t", 1)[0] in scope)})
+    return BaselineSplit(new, len(warnings) - len(new), stale, found)
+
+
+def write_privacy_baseline(path: Path, split: BaselineSplit, existed: bool, baseline: Counter) -> int:
+    """Writes the baseline: every warning found when there was none, and afterwards the old one less what is
+    stale, never adding. Returns how many fingerprints it removed (or, on creation, wrote)."""
+    kept = split.found if not existed else baseline - split.stale
+    lines = sorted(kept.elements(), key=str.encode)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(PRIVACY_BASELINE_HEADER + "".join(f"{line}\n" for line in lines), encoding="utf-8")
+    return len(lines) if not existed else sum(split.stale.values())
+
+
 def privacy_check(tree: Path | None = None, paths: list[Path] | None = None, terms_file: Path | None = None,
-                  commits: tuple[Path, str] | None = None) -> PrivacyReport:
+                  commits: tuple[Path, str] | None = None, own: Path | None = None) -> PrivacyReport:
     """Reads every travelling file of a bundle, or the given files, for what could identify somebody.
 
     Args:
@@ -848,6 +935,8 @@ def privacy_check(tree: Path | None = None, paths: list[Path] | None = None, ter
         commits: (repository, range) to read instead: each commit's message, and the lines each commit adds
             (`commit_targets`), which is what a push publishes. The range is what `git rev-list` takes,
             words separated by spaces (`@{u}..HEAD`, `SHA --not --remotes`).
+        own: The bundle whose own words a `quote` may repeat (default: this tool's). The home's check reads its
+            records from the original tool, so it names the release, as the tracked run from `.agents/` does.
         terms_file: The private terms; default `default_terms_path()`. A default that is missing means
             no terms, said in the report; a file named here that is missing is refused, because a typo
             would otherwise check nothing and pass.
@@ -863,7 +952,7 @@ def privacy_check(tree: Path | None = None, paths: list[Path] | None = None, ter
     normalised = sorted({term.casefold() for term in terms})
     fingerprint = hashlib.sha256("\n".join(normalised).encode("utf-8")).hexdigest()[:8]
     partial = not source.is_file()
-    own_text = bundle_text(OWN_BUNDLE) if OWN_BUNDLE.is_dir() else ""
+    own_text = bundle_text(own or OWN_BUNDLE) if (own or OWN_BUNDLE).is_dir() else ""
     note = (f"partial: no private-terms list on this machine ({shown} does not exist), so no private name was checked"
             if partial else f"private terms: {len(normalised)} read from {shown}, list {fingerprint}")
     if commits:
@@ -998,7 +1087,9 @@ def _privacy_scan(targets: list[Target], terms: list[str], note: str, partial: b
         own = set() if rel.startswith(f"{PROPOSALS}/") else _own_names(home)
         exempt = {i for i, term in enumerate(terms, 1) if term.casefold() in own}
         text_of_bundle = "" if path.resolve().is_relative_to(OWN_BUNDLE.resolve()) and not is_carrier_owned(rel) else own_text
+        previous = ""
         for line in _privacy_lines(path, rel, shown):
+            previous, before = line.text, previous
             if target.lines is not None and line.number not in target.lines:
                 continue
             where = f"{line.shown}:{line.number}"
@@ -1007,8 +1098,10 @@ def _privacy_scan(targets: list[Target], terms: list[str], note: str, partial: b
                 if (rule.evidence_only and not line.evidence) or (rule.literature_exempt and line.literature) \
                         or (rule.placeholder_exempt and line.placeholder_fence):
                     continue
-                found += [Finding(rule.level, name, where, hit) for hit in rule.find(line.text)
+                found += [Finding(rule.level, name, where, hit, line.text) for hit in rule.find(line.text)
                           if not (name == "quote" and quotes_bundle(hit, text_of_bundle))]
+            found += [Finding("WARN", "id-beside-domain-nearby", where, f"{hit} (the line before and this one)", line.text)
+                      for hit in _ids_beside_domains_across(before, line.text)]
             hits = term_hits(line.text, terms)
             skipped.update(i for i in hits if i in exempt)
             found += [Finding("FAIL", "private-term", where, f"term on line {i} of the terms file")
@@ -1960,9 +2053,9 @@ def dump_frontmatter(data: dict, comment: str | None = None, plain: bool = False
 
 
 CARRIER_FILE = "carrier.toml"
-CARRIER_TABLES = ("skills",)
+CARRIER_TABLES = ("skills", "red_check")
 CARRIER_KEYS = ("carrier", "adopted", "upstream", "log", "skills", "surfaces", "harvested_through", "harvested_gaps",
-               "adapted", "declined", "visibility", "private_folder", "lineage")
+               "adapted", "declined", "visibility", "private_folder", "lineage", "red_check")
 VISIBILITIES = ("public", "private")
 HARVEST_SPAN = re.compile(r"^(?P<span>\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2})(?::\s*(?P<unread>\S.*))?$")
 
@@ -1983,6 +2076,11 @@ def _toml_str(value: str) -> str:
     return "".join(out) + '"'
 
 
+def _strings(value: object) -> bool:
+    """A string, or a list of strings: what a carrier file's table may hold."""
+    return isinstance(value, str) or (isinstance(value, list) and all(isinstance(i, str) for i in value))
+
+
 def dump_carrier(data: dict) -> str:
     """The carrier file's TOML: known keys first in their order, strings and arrays of strings only."""
     lines = ["# This repository's own fields. Carrier-owned: never listed in SHA256SUMS, never written by a release."]
@@ -1998,9 +2096,10 @@ def dump_carrier(data: dict) -> str:
         else:
             raise RefusedError(f"{CARRIER_FILE}: `{key}` must be a string or a list of strings")
     for key, table in tables.items():
-        if not all(isinstance(k, str) and isinstance(v, str) for k, v in table.items()):
-            raise RefusedError(f"{CARRIER_FILE}: `[{key}]` maps names to strings")
-        lines += ["", f"[{key}]", *[f"{k} = {_toml_str(v)}" for k, v in table.items()]]
+        if not all(isinstance(k, str) and _strings(v) for k, v in table.items()):
+            raise RefusedError(f"{CARRIER_FILE}: `[{key}]` maps names to strings or lists of strings")
+        lines += ["", f"[{key}]", *[f"{k} = {_toml_str(v)}" if isinstance(v, str)
+                                    else f"{k} = [" + ", ".join(_toml_str(i) for i in v) + "]" for k, v in table.items()]]
     return "\n".join(lines) + "\n"
 
 
@@ -2014,7 +2113,7 @@ def read_carrier(tree: Path) -> dict | None:
     except tomllib.TOMLDecodeError as error:
         raise RefusedError(f"{path}: not valid TOML ({error})") from error
     bad = [k for k, v in data.items() if not (isinstance(v, str) or (isinstance(v, list) and all(isinstance(i, str) for i in v))
-                                              or (k in CARRIER_TABLES and isinstance(v, dict) and all(isinstance(i, str) for i in v.values())))]
+                                              or (k in CARRIER_TABLES and isinstance(v, dict) and all(_strings(i) for i in v.values())))]
     if bad:
         raise RefusedError(f"{path}: {', '.join(bad)} must be strings or lists of strings")
     return data
@@ -2033,8 +2132,9 @@ PROPOSAL_NAME = re.compile(r"^p-[0-9a-f]{10}$")
 PROPOSAL_KINDS = {"knowledge": "K", "method": "M", "experiment": ""}
 PROPOSAL_ACTIONS = ("new", "extends", "overlaps")
 EXPERIMENT_VERDICTS = ("confirms", "moves the boundary", "falsifies")
-PROPOSAL_KEYS = ("proposal", "bundle", "carrier", "base", "digest", "kind", "action", "target", "lacks", "verdict",
-                 "where", "seen")
+PROPOSAL_KEYS = ("proposal", "bundle", "carrier", "base", "digest", "kind", "action", "target", "topic", "lacks",
+                 "verdict", "where", "seen")
+PROPOSAL_SLUG = re.compile(r"[a-z0-9][\w.-]*")
 RECEIVED_HEADER = "| Proposal | Received at | Verdict |"
 OUTBOX = ("tracking/candidates.md", "tracking/experiments.md")
 OUTBOX_COLUMNS = {
@@ -2092,6 +2192,7 @@ class Proposal:
     base: str = ""
     digest: str = ""
     id: str = ""
+    topic: str = ""
 
     @property
     def evidence_heading(self) -> str:
@@ -2106,8 +2207,9 @@ def proposal_id(p: Proposal) -> str:
     `verify` names it. Two proposals differ in id whenever they differ in anything they say, and the id
     says nothing of the carrier to anyone who lacks the text. `base` and `digest` are left out: they say
     what it was written against, and a conversion made later must give a row the id a gather gave it.
+    `topic` is sealed only when it is set, so a proposal written before the field keeps its id.
     """
-    parts = [p.carrier, p.kind, p.action, p.target, p.seen, p.lacks, p.verdict, p.where, p.claim, p.evidence]
+    parts = [p.carrier, p.kind, p.action, p.target, *([p.topic] if p.topic else []), p.seen, p.lacks, p.verdict, p.where, p.claim, p.evidence]
     content = "\n".join(" ".join(part.split()) for part in parts)
     return "p-" + hashlib.sha256(content.encode()).hexdigest()[:10]
 
@@ -2121,6 +2223,8 @@ def release_digest(tree: Path) -> str:
 def render_proposal(p: Proposal) -> str:
     fields = {"proposal": p.id, "bundle": "agent-guides", "carrier": p.carrier, "base": p.base, "digest": p.digest,
               "kind": p.kind, "target": p.target, "seen": p.seen}
+    if p.topic:
+        fields["topic"] = p.topic
     if p.kind == "experiment":
         fields.update({"verdict": p.verdict, "where": p.where})
     else:
@@ -2157,7 +2261,8 @@ def parse_proposal(text: str, where: str) -> tuple[Proposal | None, list[str]]:
     p = Proposal(kind=kind, target=values["target"] or "", claim=claim.strip(), evidence=rest.strip(),
                  seen=values["seen"] or "", action=values["action"] or "", lacks=values["lacks"] or "",
                  verdict=values["verdict"] or "", where=values["where"] or "", carrier=values["carrier"] or "",
-                 base=values["base"] or "", digest=values["digest"] or "", id=values["proposal"] or "")
+                 base=values["base"] or "", digest=values["digest"] or "", id=values["proposal"] or "",
+                 topic=values["topic"] or "")
     if not PROPOSAL_NAME.match(p.id):
         problems.append(f"{where}: `proposal` is not `p-` and ten hex")
     if values["bundle"] != "agent-guides":
@@ -2166,8 +2271,10 @@ def parse_proposal(text: str, where: str) -> tuple[Proposal | None, list[str]]:
         problems.append(f"{where}: `carrier` is not `r-` and six hex")
     if kind not in PROPOSAL_KINDS:
         problems.append(f"{where}: `kind` is not one of {', '.join(PROPOSAL_KINDS)}")
-    if not re.fullmatch(r"[a-z0-9][\w.-]*", p.target):
+    if not PROPOSAL_SLUG.fullmatch(p.target):
         problems.append(f"{where}: `target` is not a slug (the note, candidate or method file it concerns)")
+    if p.topic and not PROPOSAL_SLUG.fullmatch(p.topic):
+        problems.append(f"{where}: `topic` is not a slug (which part of the target it concerns)")
     if not (re.fullmatch(r"\d{4}-\d{2}-\d{2}", p.seen) or p.seen == UNKNOWN_DATE):
         problems.append(f"{where}: `seen` is not a date, YYYY-MM-DD")
     if not p.claim:
@@ -4332,6 +4439,242 @@ def machine_step(repo: Path) -> "CloseStep":
 
 
 
+RED_CHECK_MARK = 'add_parser("red-check"'
+FIX_SUBJECT = re.compile(r"^fix(?:\([^)]*\))?!?:")
+RED_NONE = re.compile(r"^Red:[ \t]*none,[ \t]*(\S.*)$", re.M)
+RED_RUNNER = ("{python}", "-m", "unittest")
+
+
+@dataclass(frozen=True)
+class RedEntry:
+    sha: str
+    subject: str
+    verdict: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class RedReport:
+    configured: bool
+    entries: list[RedEntry]
+
+    @property
+    def failed(self) -> list[RedEntry]:
+        return [e for e in self.entries if e.verdict == "fail"]
+
+    def lines(self) -> list[str]:
+        if not self.configured:
+            return [f"not configured: skipped (no `[red_check]` table with `code` and `tests` in .agents/{CARRIER_FILE})"]
+        mark = {"pass": ".", "fail": "x", "accepted": "!", "skipped": "-"}
+        shown = [e for e in self.entries if e.verdict != "skipped"]
+        return [f"{mark[e.verdict]} {e.sha[:9]} {e.verdict}: {e.subject[:60]} ({e.detail})" for e in shown] + \
+            [f"{len(self.entries) - len(shown)} of {len(self.entries)} commits skipped (not a fix touching code, or made "
+             "before red-check)"]
+
+
+def red_config(repo: Path) -> dict | None:
+    """The carrier's `[red_check]` table: `code` and `tests` globs, and an optional `runner` (argv; `{python}` is this
+    interpreter, test ids are appended). None when the carrier keeps none, as one without a Python layout does."""
+    table = (read_carrier(repo / ".agents") or {}).get("red_check")
+    if not isinstance(table, dict) or not table.get("code") or not table.get("tests"):
+        return None
+    as_list = lambda v: [v] if isinstance(v, str) else list(v)
+    return {"code": as_list(table["code"]), "tests": as_list(table["tests"]), "runner": as_list(table.get("runner") or list(RED_RUNNER))}
+
+
+def _test_bodies(source: str) -> dict[str, str]:
+    """{Class.method: its syntax tree, dumped without its name} for every `test*` method of a class: what unittest
+    runs. Without the name, a test renamed or moved to another file keeps its body's dump."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {}
+    out = {}
+    for cls in tree.body:
+        for fn in cls.body if isinstance(cls, ast.ClassDef) else []:
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.name.startswith("test"):
+                name, fn.name = fn.name, "test"
+                out[f"{cls.name}.{name}"] = ast.dump(fn)
+    return out
+
+
+def _blob(repo: Path, rev: str, path: str) -> str:
+    try:
+        return git(repo, "show", f"{rev}:{path}")
+    except subprocess.CalledProcessError:
+        return ""
+
+
+def red_test_ids(repo: Path, parent: str, sha: str, files: list[str], gone: list[str] = ()) -> tuple[list[str], list[str]]:
+    """(the ids, `pkg.module.Class.method`, of the tests a commit adds or changes in `files`; those of the tests it
+    only moved or renamed): a body the parent held in one of `files` or `gone` (the test files changed or deleted),
+    and the commit no longer holds there under that name, was moved, wherever it now lives. A copy is new."""
+    held = set()
+    for path in {*files, *gone}:
+        now = _test_bodies(_blob(repo, sha, path))
+        held |= {body for name, body in _test_bodies(_blob(repo, parent, path)).items() if now.get(name) != body}
+    ids, moved = [], []
+    for path in files:
+        before, after = _test_bodies(_blob(repo, parent, path)), _test_bodies(_blob(repo, sha, path))
+        module = path.removesuffix(".py").replace("/", ".")
+        for name, body in after.items():
+            if before.get(name) != body:
+                (moved if body in held else ids).append(f"{module}.{name}")
+    return ids, moved
+
+
+def _export(repo: Path, rev: str, dest: Path, *paths: str) -> None:
+    data = git(repo, "archive", "--format=tar", rev, *(["--", *paths] if paths else []), binary=True)
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        tar.extractall(dest, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
+
+
+GIT_LOCAL_VARS = ("GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+                  "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
+                  "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
+                  "GIT_SHALLOW_FILE", "GIT_COMMON_DIR")
+
+
+def git_local_vars() -> set[str]:
+    try:
+        listed = subprocess.run(["git", "rev-parse", "--local-env-vars"], capture_output=True, text=True,
+                                check=False, env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")})
+    except OSError:
+        return set(GIT_LOCAL_VARS)
+    return set(GIT_LOCAL_VARS) | set(listed.stdout.split())
+
+
+def _red_run(runner: list[str], ids: list[str], where: Path) -> subprocess.CompletedProcess:
+    argv = [sys.executable if word == "{python}" else word for word in runner] + ids
+    local = git_local_vars()
+    env = {k: v for k, v in os.environ.items() if k not in local} | {"PYTHONDONTWRITEBYTECODE": "1"}
+    return subprocess.run(argv, cwd=where, capture_output=True, text=True, timeout=900, env=env)
+
+
+def _glob_dir(pattern: str) -> str:
+    """The folder a glob names before its first wildcard (`tests/` for `tests/test_*.py`, `` for `**/test_*.py`)."""
+    out = ""
+    for part in pattern.split("/")[:-1]:
+        if any(c in part for c in "*?["):
+            break
+        out += part + "/"
+    return out
+
+
+def _red_missing_support(repo: Path, parent: str, sha: str, output: str, is_code: Callable[[str], bool]) -> str | None:
+    """The module a parent run could not import that the commit adds outside every `code` glob: test support the
+    overlay did not bring, so the parent's failure says nothing about the defect. None when there is none; a missing
+    module that is code is the red a test of new code is meant to show."""
+    def exists(rev: str, path: str) -> bool:
+        return subprocess.run(["git", "-C", str(repo), "cat-file", "-e", f"{rev}:{path}"], capture_output=True).returncode == 0
+    for name in dict.fromkeys(re.findall(r"No module named '([\w.]+)'", output)):
+        for path in (name.replace(".", "/") + ".py", name.replace(".", "/") + "/__init__.py"):
+            if exists(sha, path) and not exists(parent, path) and not is_code(path):
+                return name
+    return None
+
+
+def _red_judge(repo: Path, sha: str, parent: str, message: str, config: dict) -> tuple[str, str]:
+    changed = [line.split("\t") for line in git(repo, "diff-tree", "-r", "--no-commit-id", "--name-status", parent, sha).splitlines()]
+    paths = [cells[-1] for cells in changed if cells[0][:1] != "D"]
+    if not any(_path_glob(g).match(p) for g in config["code"] for p in [c[-1] for c in changed]):
+        return "skipped", "touches no code"
+    if subprocess.run(["git", "-C", str(repo), "grep", "-q", "-F", "-e", RED_CHECK_MARK, parent, "--", ":(glob)**/bundle.py"],
+                      capture_output=True).returncode != 0:
+        return "skipped", "its parent was made before red-check existed"
+    if m := RED_NONE.search(message):
+        return "accepted", f"Red: none, {m.group(1).strip()}"
+    is_test = lambda p: any(_path_glob(g).match(p) for g in config["tests"])
+    is_code = lambda p: any(_path_glob(g).match(p) for g in config["code"])
+    tests = [p for p in paths if is_test(p)]
+    dirs = {_glob_dir(g) for g in config["tests"]}
+    overlay = [p for p in paths if is_test(p) or (not is_code(p) and any(p.startswith(d) for d in dirs))]
+    ids, moved = red_test_ids(repo, parent, sha, tests, [c[-1] for c in changed if c[0][:1] == "D" and is_test(c[-1])])
+    if not ids and moved:
+        return "fail", (f"a fix touching code has its tests only moved or renamed ({', '.join(moved[:3])}): nothing new "
+                        "to see red; say why with a `Red: none, <reason>` line")
+    if not ids:
+        return "fail", ("a fix touching code adds or changes no test, and says no `Red: none, <reason>` (a fix that only "
+                        "deletes code needs one too)")
+    with tempfile.TemporaryDirectory(prefix="red-check-") as scratch:
+        before, after = Path(scratch) / "parent", Path(scratch) / "commit"
+        before.mkdir()
+        after.mkdir()
+        _export(repo, parent, before)
+        _export(repo, sha, before, *overlay)
+        _export(repo, sha, after)
+        try:
+            red, green = _red_run(config["runner"], ids, before), _red_run(config["runner"], ids, after)
+        except subprocess.TimeoutExpired as error:
+            return "fail", f"not judged: the tests timed out after {error.timeout:g} s"
+    named = ", ".join(ids[:4]) + (f" and {len(ids) - 4} more" if len(ids) > 4 else "")
+    if red.returncode != 0 and (missing := _red_missing_support(repo, parent, sha, red.stderr + red.stdout, is_code)):
+        return "fail", (f"not judged: on the parent the tests cannot import `{missing}`, which the commit adds outside "
+                        "every `code` glob and test folder; keep test support under a test folder")
+    if red.returncode == 0:
+        return "fail", f"{named}: passed on the parent too, so it does not catch the defect"
+    if green.returncode != 0:
+        tail = (green.stderr or green.stdout).strip().splitlines()[-1:] or [""]
+        return "fail", f"{named}: fails on the commit itself ({tail[0][:80]})"
+    return "pass", f"{named}: red on the parent, green on the commit"
+
+
+def red_check(repo: Path, rev_range: str, config: dict | None = None) -> RedReport:
+    """Each `fix` commit in the range that touches code, judged by its tests on its parent and on itself."""
+    config = config or red_config(repo)
+    if config is None:
+        return RedReport(False, [])
+    entries, remembered = [], _red_remembered(repo)
+    for sha in git(repo, "rev-list", "--reverse", "--no-merges", rev_range).split():
+        message = git(repo, "log", "-1", "--format=%B", sha)
+        subject = message.split("\n", 1)[0]
+        parents = git(repo, "log", "-1", "--format=%P", sha).split()
+        if not FIX_SUBJECT.match(subject):
+            entries.append(RedEntry(sha, subject, "skipped", "not a fix"))
+        elif not parents:
+            entries.append(RedEntry(sha, subject, "skipped", "no parent"))
+        elif (key := f"{sha} {_red_config_key(config)}") in remembered:
+            entries.append(RedEntry(sha, subject, "pass", "remembered: judged a pass before, and a commit's trees never change"))
+        else:
+            entry = RedEntry(sha, subject, *_red_judge(repo, sha, parents[0], message, config))
+            entries.append(entry)
+            if entry.verdict == "pass":
+                _red_remember(repo, key)
+    return RedReport(True, entries)
+
+
+
+def _red_cache(repo: Path) -> Path | None:
+    try:
+        return Path(git(repo, "rev-parse", "--path-format=absolute", "--git-path", "red-check-passes").strip())
+    except (RefusedError, OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _red_config_key(config: dict) -> str:
+    return hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode()).hexdigest()[:12]
+
+
+def _red_remembered(repo: Path) -> set[str]:
+    cache = _red_cache(repo)
+    try:
+        return set(cache.read_text(encoding="utf-8").splitlines()) if cache else set()
+    except OSError:
+        return set()
+
+
+def _red_remember(repo: Path, key: str) -> None:
+    cache = _red_cache(repo)
+    if cache is None:
+        return
+    try:
+        with cache.open("a", encoding="utf-8") as handle:
+            handle.write(key + "\n")
+    except OSError:
+        pass
+
+
+
 @dataclass(frozen=True)
 class CloseStep:
     name: str
@@ -4367,6 +4710,11 @@ def close_report(repo: Path, base: str | None = None) -> list[CloseStep]:
         if memory.is_dir() else []
     steps.append(CloseStep("memory", False, tuple(f"only on this machine: {m.name}" for m in lone) or ("nothing only on this machine",)))
     steps.append(machine_step(repo))
+    if rev:
+        red = red_check(repo, rev)
+        steps.append(CloseStep("red-check", bool(red.failed), tuple(red.lines())))
+    else:
+        steps.append(CloseStep("red-check", False, ("no base given",)))
     return steps
 
 
@@ -4425,6 +4773,33 @@ def _installed(text: str) -> bool:
     return text.startswith("---\n# " + SKILL_BANNER)
 
 
+SKILL_HASH = re.compile(r"; sha256 ([0-9a-f]{16})$", re.M)
+
+
+def _skill_digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _sealed(text: str) -> str:
+    """A rendered skill with its hash at the end of the banner line."""
+    first, banner, rest = text.split("\n", 2)
+    return f"{first}\n{banner}; sha256 {_skill_digest(text)}\n{rest}"
+
+
+def _unsealed(text: str) -> tuple[str, str | None]:
+    """(the text without the hash in its banner, the hash or None)."""
+    lines = text.split("\n", 2)
+    if len(lines) < 3 or not (m := SKILL_HASH.search(lines[1])):
+        return text, None
+    return f"{lines[0]}\n{lines[1][: m.start()]}\n{lines[2]}", m.group(1)
+
+
+def _hand_edited(text: str) -> bool:
+    """An installed skill whose content is not what its banner's hash says was written."""
+    body, digest = _unsealed(text)
+    return digest is not None and digest != _skill_digest(body)
+
+
 def declined_skills(tree: Path) -> set[str]:
     """The skills a bundle's `carrier.toml` `declined` refuses: `{"*"}` for all, else the names.
 
@@ -4452,7 +4827,8 @@ def install_skills(repo: Path, tree: Path, names: list[str] | None = None, *, fo
                    into: str = SKILLS_INTO) -> list[str]:
     """Writes each named base skill (all of them by default) merged with its `LOCAL.md`; returns the paths.
 
-    A `SKILL.md` the repository wrote itself is refused unless `force`: its rules belong in `LOCAL.md` first.
+    A `SKILL.md` the repository wrote itself, or one installed and then edited by hand (its banner's hash no
+    longer matches), is refused unless `force`: its rules belong in `LOCAL.md` first.
     A skill its `carrier.toml` declines is skipped, and one already installed is left where it is.
     """
     declined = declined_skills(tree)
@@ -4465,11 +4841,15 @@ def install_skills(repo: Path, tree: Path, names: list[str] | None = None, *, fo
         if _is_declined(name, declined):
             continue
         target = repo / into / name / "SKILL.md"
-        if target.is_file() and not _installed(target.read_text(encoding="utf-8")) and not force:
+        current = target.read_text(encoding="utf-8") if target.is_file() else None
+        if current is not None and not _installed(current) and not force:
             raise RefusedError(f"{target}: a skill this repository wrote; move what it says into LOCAL.md beside it, "
                                "then install with --force")
+        if current is not None and _hand_edited(current) and not force:
+            raise RefusedError(f"{target}: installed, then edited by hand (its banner's hash no longer matches); "
+                               "move the edit into LOCAL.md beside it, or install with --force to drop it")
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(_render_skill(repo, name, bases[name], into), encoding="utf-8")
+        target.write_text(_sealed(_render_skill(repo, name, bases[name], into)), encoding="utf-8")
         written.append(target.relative_to(repo).as_posix())
     return written
 
@@ -4493,7 +4873,7 @@ def installed_skill_problems(repo: Path, tree: Path, into: str = SKILLS_INTO) ->
         rel, name = path.relative_to(repo).as_posix(), path.parent.name
         if name not in bases:
             problems.append(f"{rel}: installed from a base the bundle no longer ships; remove it, or keep it as the repository's own")
-        elif text != _render_skill(repo, name, bases[name], into):
+        elif _unsealed(text)[0] != _render_skill(repo, name, bases[name], into) or _hand_edited(text):
             problems.append(f"{rel}: not what its base and LOCAL.md produce (edited, or behind them); "
                             "run `bundle.py install-skills`, and move any hand edit into LOCAL.md")
     return problems
@@ -4913,8 +5293,24 @@ def _memory_rule(description: str, body: str) -> set[str]:
 
 
 def memory_dir(repo: Path, home: Path | None = None) -> Path:
-    """The assistant's local memory for a repository: its path with every other character a dash."""
-    return (home or Path.home()) / ".claude/projects" / re.sub(r"[^A-Za-z0-9]", "-", repo.as_posix()) / "memory"
+    """The assistant's local memory for a repository: its path with every other character a dash.
+
+    From a linked git worktree it is the main repository's path, where the assistant keeps that repository's
+    memory: the worktree's own folder is empty. Outside git, or in the main checkout, the path given."""
+    return (home or Path.home()) / ".claude/projects" / re.sub(r"[^A-Za-z0-9]", "-", _main_checkout(repo).as_posix()) / "memory"
+
+
+def _main_checkout(repo: Path) -> Path:
+    """The main repository a linked worktree belongs to (`git rev-parse --git-common-dir`); else `repo`."""
+    try:
+        result = subprocess.run(["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
+                                capture_output=True, text=True, check=False)
+    except OSError:
+        return repo
+    dirs = result.stdout.split("\n")
+    if result.returncode != 0 or len(dirs) < 2 or dirs[0] == dirs[1] or Path(dirs[1]).name != ".git":
+        return repo
+    return Path(dirs[1]).parent
 
 
 def memory_report(memory: Path, repo: Path) -> list[Memory]:
@@ -5668,6 +6064,10 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--tracked", action="store_true", help="read every file git tracks in --repo but the bundle's "
                    "`.agents/`, which the tree run reads: whatever is published, with no list to keep")
     p.add_argument("--repo", default=str(OWN_REPO), help="with --commits or --tracked: the repository (default: this tool's)")
+    p.add_argument("--baseline", metavar="FILE", help="with --tracked: the ratchet's fingerprints; a warning they hold is "
+                   "counted, a new one is printed and fails (exit 1), and a fingerprint no longer found is reported stale")
+    p.add_argument("--write-baseline", action="store_true", help="with --baseline: create it when absent; afterwards only "
+                   "remove its stale fingerprints, never add one (a new warning is reworded, or allowed on its line)")
     p = sub.add_parser("trailers", help="no commit message in a range credits an assistant (exit 1)")
     p.add_argument("range", nargs="*", metavar="RANGE", help="a git range, as `git log` takes it, options included "
                    "(`--all`, `main..feature`, `HEAD --not --remotes`), in one argument or several "
@@ -5698,6 +6098,8 @@ def _parser() -> argparse.ArgumentParser:
     p = sub.add_parser("propose", help="write one proposal to the bundle into proposals/, under this carrier's id")
     p.add_argument("--kind", required=True, choices=list(PROPOSAL_KINDS))
     p.add_argument("--target", required=True, help="the slug of the note, candidate or method file it concerns (a new slug for a new learning)")
+    p.add_argument("--topic", default="", help="optional: a slug for which part of the target it concerns, so the home "
+                   "groups proposals to one method file by topic")
     p.add_argument("--claim", help="the claim in one paragraph, with no project noun; for an experiment, what was run")
     p.add_argument("--evidence", help="the occurrence and the literature, generalised; for an experiment, the result")
     p.add_argument("--from", dest="body", metavar="FILE", help="the claim and the evidence from a file, as a proposal's body: the claim, "
@@ -5720,7 +6122,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--repo", default=str(OWN_REPO))
     p.add_argument("--bundle", default=str(OWN_BUNDLE))
     p.add_argument("--check", action="store_true", help="install nothing; fail (exit 1) when an installed skill is stale or edited")
-    p.add_argument("--force", action="store_true", help="overwrite a SKILL.md the repository wrote, once its rules are in LOCAL.md")
+    p.add_argument("--force", action="store_true", help="overwrite a SKILL.md the repository wrote, or one edited under its banner, once its rules are in LOCAL.md")
     p = sub.add_parser("surfaces", help="Cursor's and Copilot's copies of what Claude Code reads (rules, subagents, a pointer); "
                                         "experimental; --write")
     p.add_argument("--repo", default=str(OWN_REPO))
@@ -5737,6 +6139,12 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--write", action="store_true", help="insert it above the newest entry instead of printing it")
     p.add_argument("--date", default="", help="YYYY-MM-DD (default: today)")
     sub.add_parser("research-hook", help="the researcher agent's PreToolUse hook: one call on stdin; exit 2 refuses it")
+    p = sub.add_parser("shell-check", help="under zsh, a variable assigned words with spaces and expanded unquoted in "
+                       "the same command (exit 1); --hook: the command hook's payload on stdin, exit 2 refuses it")
+    p.add_argument("command_words", nargs="*", metavar="CMD", help="the command, after `--`")
+    p.add_argument("--shell", help="the shell the command runs in (default: $CLAUDE_CODE_SHELL, else $SHELL); "
+                                   "anything but zsh passes")
+    p.add_argument("--hook", action="store_true", help="read a PreToolUse payload on stdin instead of CMD")
     p = sub.add_parser("lookup", help="the index's rows a change matches, from its words, files or diff; nothing when none")
     p.add_argument("words", nargs="*", help="what the change does, in words")
     p.add_argument("--files", nargs="*", type=Path, help="files the change will touch")
@@ -5744,9 +6152,14 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--top", type=int, default=3)
     p.add_argument("--cards", action="store_true", help="also print each card's Not when and Check")
     p.add_argument("--bundle", default=str(OWN_BUNDLE))
-    p = sub.add_parser("close", help="the close's deterministic checks in one command: verify, trailers, ids, decisions, docs-drift, memory, machines (exit 1 on any)")
+    p = sub.add_parser("close", help="the close's deterministic checks in one command: verify, trailers, ids, decisions, docs-drift, memory, machines, "
+                       "red-check (exit 1 on any)")
     p.add_argument("--repo", default=str(OWN_REPO))
-    p.add_argument("--base", help="the session's first commit's parent: trailers and docs-drift read BASE..HEAD")
+    p.add_argument("--base", help="the session's first commit's parent: trailers, docs-drift and red-check read BASE..HEAD")
+    p = sub.add_parser("red-check", help="each fix commit touching code: its new or changed tests fail on its parent and pass "
+                       "on it, or it says `Red: none, <reason>` (exit 1 on a failure); the carrier file's [red_check]")
+    p.add_argument("range", metavar="RANGE", help="the commits to judge, as BASE..HEAD")
+    p.add_argument("--repo", default=str(OWN_REPO))
     p = sub.add_parser("docs-drift", help="documents left stale by a change, from the carrier's docs-map.toml (exit 1 on a blocking rule)")
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument("--staged", action="store_true", help="warn on the staged changes (a pre-commit hook)")
@@ -5837,6 +6250,227 @@ def research_hook(stdin: str) -> int:
         return 2
 
 
+
+@dataclass(frozen=True)
+class ShellFinding:
+    name: str
+    message: str
+
+
+_SHELL_ASSIGN = re.compile(r"([A-Za-z_]\w*)=")
+_SHELL_EXPANSION = re.compile(r"\$(?:\{([A-Za-z_]\w*)(?=[}:#%/^,+=?-])|([A-Za-z_]\w*))")
+_SHELL_HEREDOC = re.compile(r"<<(-?)[ \t]*(?:'([A-Za-z_]\w*)'|\"([A-Za-z_]\w*)\"|\\?([A-Za-z_]\w*))")
+_SHELL_TEST = re.compile(r"\[\[[ \t]")
+_SHELL_TEST_END = re.compile(r"[ \t]\]\](?=[ \t\n;&|)]|$)")
+_SHELL_WORD_END = " \t\n;|&()<>"
+
+
+def _shell_value(command: str, i: int) -> tuple[str, int]:
+    """(the literal an assignment's value spells, quotes removed, and where it ends) from `i`."""
+    out = []
+    while i < len(command) and command[i] not in _SHELL_WORD_END:
+        ch = command[i]
+        if ch == "\\":
+            out.append(command[i + 1: i + 2])
+            i += 2
+        elif ch in "'\"":
+            end = i + 1
+            while end < len(command) and command[end] != ch:
+                end += 2 if ch == '"' and command[end] == "\\" else 1
+            out.append(command[i + 1: end])
+            i = end + 1
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out), i
+
+
+def _shell_heredoc_end(command: str, i: int, pending: list[tuple[str, bool]]) -> int:
+    """Where the commands go on after the here-documents `pending` opened on the line ending at `i` (its newline):
+    each body runs to the line holding only its delimiter (leading tabs allowed for `<<-`), and is never a command."""
+    pos = i + 1
+    for delimiter, tabs in pending:
+        while pos < len(command):
+            end = command.find("\n", pos)
+            end = len(command) if end < 0 else end
+            line = command[pos:end]
+            pos = end + 1
+            if (line.lstrip("\t") if tabs else line) == delimiter:
+                break
+    return min(pos, len(command))
+
+
+def _shell_prefix(command: str, i: int) -> bool:
+    """Whether the assignments from `i` on are a command's prefix (`X=v cmd`), which sets nothing in the shell."""
+    while True:
+        while i < len(command) and command[i] in " \t":
+            i += 1
+        if i >= len(command) or command[i] in ";|&\n)#":
+            return False
+        if not (m := _SHELL_ASSIGN.match(command, i)) or command.startswith("(", m.end()):
+            return True
+        _, i = _shell_value(command, m.end())
+
+
+def shell_findings(command: str) -> list[ShellFinding]:
+    """Each variable the command assigns a literal holding whitespace and later expands unquoted, as `$NAME` or
+    `${NAME}`, outside every quote; `"$NAME"`, `${=NAME}` (split on purpose), an array and `"${NAME[@]}"` pass.
+
+    A scan, not a parser: single and double quotes, backslashes, comments, `$( )` (inside double quotes too) and
+    `( )` are followed, and what they assign stays inside them; a here-document's body is skipped (no shell splits
+    it, and a quoted one is text another program reads), while a here-string (`<<<`) and a shift inside `$(( ))` or
+    `(( ))` open none; `[[ ]]` never splits, and `X=v cmd` sets nothing here.
+    """
+    spaced: set[str] = set()
+    found: dict[str, ShellFinding] = {}
+    stack: list[list] = [["top", 0]]
+    heredocs: list[tuple[str, bool]] = []
+    i, start = 0, True
+    while i < len(command):
+        ctx, ch = stack[-1], command[i]
+        if ctx[0] == "arith":
+            if command.startswith("$(", i) and not command.startswith("$((", i):
+                stack.append(["sub", 0, set(spaced)])
+                i, start = i + 2, True
+            elif ch == ")" and ctx[1] == 0 and command.startswith("))", i):
+                stack.pop()
+                i, start = i + 2, False
+            else:
+                ctx[1] += {"(": 1, ")": -1}.get(ch, 0)
+                i += 1
+            continue
+        if ctx[0] == "dq":
+            if ch == "\\":
+                i += 2
+            elif ch == '"':
+                stack.pop()
+                i, start = i + 1, False
+            elif command.startswith("$((", i):
+                stack.append(["arith", 0])
+                i += 3
+            elif command.startswith("$(", i):
+                stack.append(["sub", 0, set(spaced)])
+                i, start = i + 2, True
+            else:
+                i += 1
+            continue
+        if ch == "\\":
+            i, start = i + 2, False
+            continue
+        if ch == "'":
+            end = command.find("'", i + 1)
+            i, start = (len(command) if end < 0 else end + 1), False
+            continue
+        if ch == '"':
+            stack.append(["dq", 0])
+            i, start = i + 1, False
+            continue
+        if ch == "#" and start:
+            end = command.find("\n", i)
+            i = len(command) if end < 0 else end
+            continue
+        if command.startswith("$((", i) or (start and command.startswith("((", i)):
+            stack.append(["arith", 0])
+            i, start = i + (3 if ch == "$" else 2), False
+            continue
+        if command.startswith("$(", i) or (ch == "(" and start):
+            stack.append(["sub", 0, set(spaced)])
+            i, start = i + (2 if ch == "$" else 1), True
+            continue
+        if ctx[0] == "sub" and ch in "()":
+            if ch == ")" and ctx[1] == 0:
+                spaced = stack.pop()[2]
+                i, start = i + 1, False
+                continue
+            ctx[1] += 1 if ch == "(" else -1
+        if ch == "\n" and heredocs:
+            i, start = _shell_heredoc_end(command, i, heredocs), True
+            heredocs = []
+            continue
+        if command.startswith("<<<", i):
+            i, start = i + 3, False
+            continue
+        if ch == "<" and (m := _SHELL_HEREDOC.match(command, i)):
+            heredocs.append((m.group(2) or m.group(3) or m.group(4), m.group(1) == "-"))
+            i, start = m.end(), False
+            continue
+        if start and _SHELL_TEST.match(command, i):
+            end = _SHELL_TEST_END.search(command, i + 2)
+            i, start = (len(command) if end is None else end.end()), False
+            continue
+        if ch == "$" and (m := _SHELL_EXPANSION.match(command, i)):
+            name = m.group(1) or m.group(2)
+            if name in spaced and name not in found:
+                found[name] = ShellFinding(name, (
+                    f"`{m.group(0)}` expands `{name}`, assigned words with spaces in this command, unquoted: zsh does not "
+                    f"split it, so it arrives as one argument. Split it with `${{={name}}}`, or make it an array "
+                    f"(`{name}=(a b)`) and expand `\"${{{name}[@]}}\"`; quote it (`\"${name}\"`) if one word is meant."))
+            i, start = m.end(), False
+            continue
+        if start and (m := _SHELL_ASSIGN.match(command, i)):
+            if command.startswith("(", m.end()):
+                spaced.discard(m.group(1))
+                i, start = m.end(), False
+                continue
+            value, i = _shell_value(command, m.end())
+            if not _shell_prefix(command, i):
+                (spaced.add if re.search(r"\s", value) else spaced.discard)(m.group(1))
+            start = False
+            continue
+        start = ch in _SHELL_WORD_END
+        i += 1
+    return list(found.values())
+
+
+def is_zsh(shell: str | None = None) -> bool:
+    """Whether commands run under zsh: the shell named, else the host's (`CLAUDE_CODE_SHELL`), else `SHELL`."""
+    shell = shell or os.environ.get("CLAUDE_CODE_SHELL") or os.environ.get("SHELL") or ""
+    return Path(shell).name == "zsh"
+
+
+def shell_hook(stdin: str, shell: str | None = None) -> int:
+    """The command hook's form: one call on stdin; 2 refuses it with the findings on standard error. A payload it
+    cannot read passes: this guard is a lint on the agent's own command, and a broken one must not stop every call."""
+    try:
+        payload = json.loads(stdin)
+    except ValueError:
+        return 0
+    if not isinstance(payload, dict) or payload.get("tool_name", "Bash") != "Bash" or not is_zsh(shell):
+        return 0
+    findings = shell_findings(str((payload.get("tool_input") or {}).get("command", "")))
+    if not findings:
+        return 0
+    print("shell-check: refused under zsh, run it again rewritten:\n" + "\n".join(f"  x {f.message}" for f in findings),
+          file=sys.stderr)
+    return 2
+
+
+def _privacy_with_baseline(result: PrivacyReport, held: list, repo: Path, path: Path, write: bool) -> int:
+    """`privacy --tracked --baseline`: the FAILs already printed, the new warnings in full, the known ones counted."""
+    existed = path.is_file()
+    baseline = read_privacy_baseline(path)
+    split = baseline_split(result.warnings, repo, baseline)
+    if not existed and not write:
+        print(f"  ! WARN baseline {path}: no such file; every warning is new (`--write-baseline` creates it)")
+    if write and not existed:
+        split = BaselineSplit([], len(result.warnings), Counter(), split.found)
+    for f in split.new:
+        print(f"  ! WARN {f.where} {f.rule}: {f.match}")
+    for note in result.notes()[len(result.warnings):]:
+        print(note)
+    stale = sum(split.stale.values())
+    if write:
+        changed = write_privacy_baseline(path, split, existed, baseline)
+        print(f"  . baseline {path}: " + (f"created with {changed} fingerprints" if not existed
+                                          else f"{changed} stale fingerprints removed; nothing added"))
+        stale = 0
+    elif stale:
+        print(f"  ! baseline {path}: {stale} stale fingerprints, no longer found; `--write-baseline` removes them")
+    print(result.summary() + f"; {split.known} known in the baseline, {len(split.new)} new, {stale} stale"
+          + (f"; {len(held)} warnings in proposals, which the home's intake holds back" if held else ""))
+    return 1 if result.failures or held or split.new else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(_trailers_argv(list(sys.argv[1:] if argv is None else argv)))
     try:
@@ -5849,6 +6483,17 @@ def main(argv: list[str] | None = None) -> int:
 def _run(args: argparse.Namespace) -> int:
     if args.command == "research-hook":
         return research_hook(sys.stdin.read())
+    if args.command == "shell-check":
+        if args.hook:
+            return shell_hook(sys.stdin.read(), args.shell)
+        if not is_zsh(args.shell):
+            print("shell-check: not zsh, nothing to check")
+            return 0
+        findings = shell_findings(" ".join(args.command_words))
+        for finding in findings:
+            print(f"  x {finding.message}")
+        print(f"shell-check: {len(findings)} unquoted expansions of a spaced value" if findings else "shell-check: clean")
+        return 1 if findings else 0
     if args.command == "verify":
         tree = Path(args.tree)
         privacy = privacy_check(tree) if not is_legacy(_a_bundle(tree)) else None
@@ -5930,6 +6575,10 @@ def _run(args: argparse.Namespace) -> int:
                   "their reason is an agent's by definition, so none is waiting on a person")
         return 1 if errors else 0
     if args.command == "privacy":
+        if args.write_baseline and not args.baseline:
+            raise RefusedError("privacy: --write-baseline writes the file --baseline names; give both")
+        if args.baseline and not args.tracked:
+            raise RefusedError("privacy: --baseline reads with --tracked, whose paths it fingerprints; give both")
         if args.tracked:
             if args.paths or args.commits:
                 raise RefusedError("privacy: --tracked reads what git tracks; give it alone, not with --paths or --commits")
@@ -5946,6 +6595,8 @@ def _run(args: argparse.Namespace) -> int:
         for f in held:
             print(f"  x FAIL {f.where} {f.rule}: {f.match} — a warning in a proposal: the home's intake holds it "
                   "back until it is generalised, or answered on its line with a reason")
+        if args.baseline:
+            return _privacy_with_baseline(result, held, Path(args.repo), Path(args.baseline), args.write_baseline)
         for note in result.notes():
             print(note)
         print(result.summary() + (f"; {len(held)} warnings in proposals, which the home's intake holds back" if held else ""))
@@ -6021,7 +6672,7 @@ def _run(args: argparse.Namespace) -> int:
             raise RefusedError("give the claim and the evidence: --claim and --evidence, or --from FILE")
         proposal = Proposal(kind=args.kind, target=args.target, claim=claim.strip(), evidence=evidence.strip(), seen=args.seen,
                             action=args.action if args.kind != "experiment" else "", lacks=args.lacks if args.kind != "experiment" else "",
-                            verdict=args.verdict, where=args.where)
+                            verdict=args.verdict, where=args.where, topic=args.topic)
         print(f"proposed {write_proposal(Path(args.tree), proposal)}; run `bundle.py privacy` before committing it")
         return 0
     if args.command == "proposals":
@@ -6044,7 +6695,7 @@ def _run(args: argparse.Namespace) -> int:
         heard = received(tree)
         for proposal in found:
             status = f"received: {heard[proposal.id]}" if proposal.id in heard else "waiting for the home"
-            print(f"  {proposal.id}  {proposal.kind:10} {proposal.target:40} {status}")
+            print(f"  {proposal.id}  {proposal.kind:10} {proposal.target + ('/' + proposal.topic if proposal.topic else ''):40} {status}")
         for problem in problems:
             print("  x " + problem)
         print(f"{len(found)} proposals, {sum(p.id in heard for p in found)} already received (`--prune` removes them)")
@@ -6096,15 +6747,19 @@ def _run(args: argparse.Namespace) -> int:
     if args.command == "new":
         repo = Path(args.repo)
         log = Path(args.log) if args.log else carrier_log(repo)
+        if args.write and not log.is_file():
+            raise RefusedError(f"{log}: no session log there to write into; create it, or name the log this repository "
+                               f"keeps in `.agents/{CARRIER_FILE}`'s `log` (or pass --log)")
         title = " ".join(args.parts)
         template, added, lacking = entry_format(log, Path(args.bundle))
+        minted = record_id("s", title, repo_carrier_id(repo))
         entry = new_entry(title, repo_carrier_id(repo), args.date or datetime.date.today().isoformat(), template,
                           level=entry_level(log.read_text(encoding="utf-8")) if log.is_file() else 2)
         if not args.write:
             print(entry, end="")
         else:
             log.write_text(insert_entry(log.read_text(encoding="utf-8"), entry), encoding="utf-8")
-            print(f"wrote the entry skeleton into {log}: replace each comment, or delete a field the format lets you omit")
+            print(f"wrote the entry skeleton {minted} into {log}: replace each comment, or delete a field the format lets you omit")
         if added:
             print(f"  . the method's entry format has fields this log's format lacks, appended and marked: {' '.join(f'**{label}**' for label in added)}; "
                   "add them to the log's format, or say there why it omits them")
@@ -6140,6 +6795,12 @@ def _run(args: argparse.Namespace) -> int:
         failed = [s.name for s in steps if s.failed]
         print("close: " + (f"{len(failed)} checks failed ({', '.join(failed)})" if failed else "every check passed"))
         return 1 if failed else 0
+    if args.command == "red-check":
+        judged = red_check(Path(args.repo), args.range)
+        for line in judged.lines():
+            print(f"  {line}")
+        print("red-check: " + (f"{len(judged.failed)} fixes failed" if judged.failed else "passed"))
+        return 1 if judged.failed else 0
     if args.command == "docs-drift":
         repo = Path(args.repo)
         if args.staged or args.range:

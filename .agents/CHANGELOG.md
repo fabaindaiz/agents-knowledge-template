@@ -9,6 +9,90 @@ version it holds with `bundle.py changelog --since <its version>`.
 
 ## [Unreleased]
 
+## [0.0.37] - 2026-11-26
+
+**What a carrier runs at this update: `install-skills`, whose banner now carries a hash so a hand edit is refused
+rather than overwritten.** The harvest and the update become followable with no one to answer, and the update's
+harvest runs in a session of its own; a proposal may name a `topic:`; the tools gain `red-check` (a fix's tests must
+fail on its parent), `shell-check` (zsh) and a privacy ratchet over tracked files; four queued extensions enter their
+notes. A carrier may add a `[red_check]` table to its `carrier.toml` to have its fix commits judged; without one,
+`red-check` reports itself not configured. Still a patch: criterion 2 of the first minor was re-run on fresh copies
+and its four remaining doubts fixed, not re-run after them; criterion 3 is unmet and 1 unproven.
+
+### Added
+
+- **A proposal's optional `topic:`** (`d-5ed7e8-9f14d5`): `propose --topic SLUG` names which part of the target a
+  proposal concerns, and the home's intake groups by target and topic, so proposals extending one method file become
+  one candidate per topic rather than one per file. A proposal without it reads, renders and keeps its id as before. A topic on a note or a candidate already known is another occurrence of it (d-5ed7e8-2505a2).
+- **A privacy ratchet** (`d-5ed7e8-af36e9`): `bundle.py privacy --tracked --baseline FILE` reads a baseline of
+  fingerprints, one per known warning (the file, the rule and a short hash of the warned line, never its text or the
+  value matched, and no line number, so a moved line keeps its fingerprint). A new warning is printed in full and
+  fails; the known ones are counted; a fingerprint no longer found is reported stale. `--write-baseline` creates
+  the file when absent and afterwards only removes stale fingerprints, never adds one: a new warning is reworded,
+  or allowed on its line by the owner. A FAIL is never fingerprinted.
+
+- **`bundle.py red-check RANGE`** (`d-5ed7e8-8c417c`): each `fix` commit in the range that touches code has its new or
+  changed test methods (found by syntax tree) run on its parent's tree with the commit's test folder laid over it,
+  where they must fail, and on the commit's own tree, where they must pass; a `Red: none, <reason>` line in the
+  message is accepted without the parent run and reported. A commit whose parent does not yet hold the check is
+  skipped, and a carrier without a `[red_check]` table in `carrier.toml` (`code`, `tests`, optional `runner`) gets
+  "not configured: skipped". `bundle.py close --base B` runs it over `B..HEAD`; a carrier file's table may now hold
+  lists of strings.
+- **`bundle.py shell-check`** (`d-5ed7e8-1d383e`): under zsh, a variable assigned a literal holding spaces and expanded
+  unquoted later in the same command (`$NAME`, `${NAME}`, `for x in $NAME`) is reported with its fix, `${=NAME}` or
+  an array and `"${NAME[@]}"`; `--hook` reads a command hook's payload and refuses with exit 2. Any other shell passes.
+
+### Changed
+
+- **The harvest and the update, followable unattended** (criterion 2 of the first minor, `i-5ed7e8-b9628b`): both
+  open with a rule for a run with no one to answer (each default taken written as `unattended: …`, never a choice
+  that needs the owner's yes), and the eleven gaps two copy runs found are closed: a delegated harvest's refusals,
+  how to see an old outbox and a later harvest on a branch, the frontier when only records were read, the harvest's
+  own log entry; the update's export from any tree that holds the release, the live procedure followed, the
+  decisions migration's two steps, the wiring lines read only when needed, the entry's id, a host without an agent
+  folder.
+- **The update's harvest runs in a session of its own** (`d-5ed7e8-87d7b9`), and a carrier's own audit no longer
+  re-checks the release's index and cards, which `verify` covers (`d-5ed7e8-1d9ff1`); the update and harvest read
+  less (`i-5ed7e8-0ae753`).
+- **The re-run on fresh copies closed the last gaps**: the opening questions' stop yields to an unattended run; a period of
+  the bundle's own updates alone is nothing to harvest; each harvest's log entry has its own title, so its own id;
+  an unattended update never takes step 5's approval; a release exported elsewhere runs its own `export`.
+- **Four notes extended with the oldest queued extensions** (`d-5ed7e8-0b7fb2`): `nested-partial-update-replaces`
+  (an embedded store's semantics, measured), `absent-constraint-widens` (an optional predicate that widens what
+  executes, and the guard of an irreversible physical effect), `best-effort-side-channels` (the pattern's own cost:
+  a wrapped call cannot be told from outside between working and never having worked) and
+  `ratchet-in-a-pinned-environment` (the count recorded when the rule is introduced, on a clean export).
+
+### Fixed
+
+- `bundle.py install-skills` no longer overwrites a `SKILL.md` edited by hand under its banner: the banner now ends
+  with a hash of what was written, and an install refuses a file that no longer matches it, naming the file and the
+  fix (move the edit into `LOCAL.md`, or `--force`). An unedited install is still refreshed. A banner written before
+  this release has no hash and is refreshed as before.
+- `bundle.py new entry --write` into a log that does not exist refuses in one line, naming the log and the carrier
+  file's `log` field, instead of a traceback; a written entry's report names the id it minted.
+- `bundle.py memory-diff` run from a linked git worktree reads the main repository's memory folder, not the
+  worktree's own empty one.
+- **An id beside a description across lines** (`i-5ed7e8-408166`): the privacy check's `id-beside-domain` read one
+  line at a time, so a carrier or record id on one line and a description of it on the next passed. Two adjacent
+  lines of one paragraph are now read together, as a warning (`id-beside-domain-nearby`), never a failure. It is listed by gather and intake and holds no proposal back (d-5ed7e8-feeec8). A carrier's own `privacy` reports it as a warning, never as a failure its hook would block.
+- **`red-check` and `shell-check` read what they judge more exactly.** `red-check`: a `Red: none,` line takes its
+  reason from its own line only, never the next; only the files matching the `tests` globs are laid over the parent,
+  so a test kept beside its code no longer brings the fix along; a test only moved or renamed (the same body under a
+  new name or file) is not new; a run that times out reports the commit as not judged, a failure, never a crash; and
+  the failure for a fix with no test says a fix that only deletes code needs a `Red: none` line too. `shell-check`:
+  a here-document's body is skipped, not read as commands; what a subshell assigns stays inside it; `[[ ]]` is never
+  a finding; a prefix assignment (`X=v cmd`) sets nothing; and `${X:-d}`, `${X#p}` and the like expand X.
+  Then: a here-string (`<<<`) and a shift inside `$(( ))` or `(( ))` no longer open a here-document that swallowed
+  the rest of the command. `red-check` lays over the parent every changed file under the test globs' folders that
+  matches no `code` glob, so a new helper, fixture or data file comes along; a parent run that cannot import a module
+  the commit adds outside the code and the test folders is not judged, a failure, never a red; and a fix touching code
+  whose tests only moved fails unless it carries a `Red: none, <reason>` line.
+- `bundle.py red-check` runs a judged commit's tests without the git context a hook exports (`GIT_DIR` and its
+  kin), which bound their throwaway repositories to the real one, so a sound fix read once as failing on itself.
+- `bundle.py red-check` remembers a pass by commit and configuration, in the repository's git folder, and does not
+  judge that commit again: a historical commit's own flaky test had made the gate flaky. A fail is never kept.
+
 ## [0.0.36] - 2026-11-25
 
 **What a carrier runs at this update: `install-skills`, for the new `edit-docs` skill.** The method gains the
@@ -33,7 +117,7 @@ record is fixed below.
 - **A merge held by a hook** (§21.3): the carrier adds a `pre-merge-commit` stub that runs its pre-commit hook (the bundle ships none), since the sentence
   alone recurred; what it does not hold (a merge finished by hand, a fast-forward, `--no-verify`) is named.
 - **Delegates** (*Long runs and delegates*): a red run reported, never retried away, a flaky test a finding; the
-  controller and lane roles, and heavy gates serialised rather than split across lanes.
+  roles of the session that merges and of its lanes, and heavy gates serialised rather than split across lanes.
 - **The machine register** (`d-5ed7e8-5751b6`): `bundle.py machine --mint` gives a machine a random id kept outside
   every repository; `machine --write --waits "…"` writes its row (its carriers by id and version, what waits there,
   the date) in `meta/tracking/machines.md`, never a name or a path; `machine --check` fails on a name, a path, a bad
